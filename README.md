@@ -36,6 +36,25 @@ result = simulate_replenishment(
 print(result.summary)
 ```
 
+```python
+from replenishment import ForecastBasedPolicy, simulate_replenishment
+
+policy = ForecastBasedPolicy(
+    forecast=[18, 20, 22, 21, 19, 17],
+    actual=[16, 19, 24, 20, 18, 15],
+    service_level=0.95,
+)
+result = simulate_replenishment(
+    periods=6,
+    demand=[16, 19, 24, 20, 18, 15],
+    initial_on_hand=30,
+    lead_time=1,
+    policy=policy,
+)
+
+print(result.summary)
+```
+
 ## Notebook
 
 See `notebooks/stock_replenishment_example.ipynb` for a runnable example.
