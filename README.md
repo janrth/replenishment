@@ -2,6 +2,23 @@
 
 Stock replenishment simulation utilities.
 
+## Environment (uv + Python 3.12)
+
+This repo is set up to use Python 3.12 via `uv`.
+
+```bash
+uv python install 3.12
+uv venv --python 3.12
+source .venv/bin/activate
+uv pip install -e ".[dev]"
+```
+
+Run checks with:
+
+```bash
+uv run pytest
+```
+
 ## Usage
 
 ```python
@@ -18,3 +35,7 @@ result = simulate_replenishment(
 
 print(result.summary)
 ```
+
+## Notebook
+
+See `notebooks/stock_replenishment_example.ipynb` for a runnable example.
