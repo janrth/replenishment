@@ -1,6 +1,6 @@
 """Replenishment simulation library."""
 
-from .policies import ReorderPointPolicy
+from .policies import ForecastBasedPolicy, ReorderPointPolicy
 from .simulation import (
     DemandModel,
     InventoryState,
@@ -12,6 +12,7 @@ from .simulation import (
 __all__ = [
     "DemandModel",
     "InventoryState",
+    "ForecastBasedPolicy",
     "ReorderPointPolicy",
     "SimulationResult",
     "SimulationSummary",
