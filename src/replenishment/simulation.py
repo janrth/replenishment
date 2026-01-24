@@ -46,6 +46,9 @@ class SimulationSummary:
     total_backorders: int
     fill_rate: float
     average_on_hand: float
+    holding_cost: float
+    stockout_cost: float
+    total_cost: float
 
 
 @dataclass(frozen=True)
@@ -75,11 +78,15 @@ def simulate_replenishment(
     initial_on_hand: int,
     lead_time: int,
     policy: OrderingPolicy,
+    holding_cost_per_unit: float = 0.0,
+    stockout_cost_per_unit: float = 0.0,
 ) -> SimulationResult:
     if periods <= 0:
         raise ValueError("Periods must be positive.")
     if lead_time < 0:
         raise ValueError("Lead time cannot be negative.")
+    if holding_cost_per_unit < 0 or stockout_cost_per_unit < 0:
+        raise ValueError("Cost inputs must be non-negative.")
 
     demand_model = _normalize_demand(demand)
     on_hand = initial_on_hand
@@ -142,6 +149,9 @@ def simulate_replenishment(
 
     fill_rate = total_fulfilled / total_demand if total_demand else 1.0
     average_on_hand = on_hand_total / periods
+    holding_cost = on_hand_total * holding_cost_per_unit
+    stockout_cost = total_backorders * stockout_cost_per_unit
+    total_cost = holding_cost + stockout_cost
 
     summary = SimulationSummary(
         total_demand=total_demand,
@@ -149,6 +159,9 @@ def simulate_replenishment(
         total_backorders=total_backorders,
         fill_rate=fill_rate,
         average_on_hand=average_on_hand,
+        holding_cost=holding_cost,
+        stockout_cost=stockout_cost,
+        total_cost=total_cost,
     )
 
     return SimulationResult(snapshots=snapshots, summary=summary)
