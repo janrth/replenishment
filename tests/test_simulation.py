@@ -9,8 +9,13 @@ def test_simulation_summary_consistency():
         initial_on_hand=10,
         lead_time=1,
         policy=policy,
+        holding_cost_per_unit=0.5,
+        stockout_cost_per_unit=2.0,
     )
 
     assert result.summary.total_demand == 40
     assert result.summary.total_fulfilled <= result.summary.total_demand
     assert 0 <= result.summary.fill_rate <= 1
+    assert result.summary.holding_cost >= 0
+    assert result.summary.stockout_cost >= 0
+    assert result.summary.total_cost == result.summary.holding_cost + result.summary.stockout_cost
