@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
-from .policies import ForecastBasedPolicy, QuantileForecastPolicy
-from .simulation import ArticleSimulationConfig, SimulationResult, simulate_replenishment
+from .policies import ForecastBasedPolicy, ForecastSeriesPolicy
+from .simulation import ArticleSimulationConfig, DemandModel, SimulationResult, simulate_replenishment
 
 
 @dataclass(frozen=True)
@@ -16,8 +16,25 @@ class ServiceLevelOptimizationResult:
 
 
 @dataclass(frozen=True)
-class QuantileOptimizationResult:
-    quantile: float
+class ForecastCandidatesConfig:
+    """Inputs for forecast-candidate optimization.
+
+    Use string labels to disambiguate candidates (for example "45-low", "45-high").
+    """
+
+    periods: int
+    demand: Iterable[int] | DemandModel
+    initial_on_hand: int
+    lead_time: int
+    forecast_candidates: Mapping[float | str, Iterable[int] | DemandModel]
+    holding_cost_per_unit: float = 0.0
+    stockout_cost_per_unit: float = 0.0
+
+
+@dataclass(frozen=True)
+class ForecastTargetOptimizationResult:
+    target: float | str
+    policy: ForecastSeriesPolicy
     simulation: SimulationResult
 
 
@@ -73,31 +90,30 @@ def optimize_service_level_factors(
     return results
 
 
-def optimize_quantile_levels(
-    articles: Mapping[str, ArticleSimulationConfig],
-    candidate_quantiles: Iterable[float],
-) -> dict[str, QuantileOptimizationResult]:
-    """Pick the quantile level per article that minimizes total cost."""
-    quantiles = list(candidate_quantiles)
-    if not quantiles:
-        raise ValueError("Candidate quantiles must be provided.")
-    if any(quantile < 0 or quantile > 1 for quantile in quantiles):
-        raise ValueError("Quantile levels must be between 0 and 1.")
-
-    results: dict[str, QuantileOptimizationResult] = {}
+def optimize_forecast_targets(
+    articles: Mapping[str, ForecastCandidatesConfig],
+    candidate_targets: Iterable[float | str] | None = None,
+) -> dict[str, ForecastTargetOptimizationResult]:
+    """Pick the forecast candidate (mean or quantile) that minimizes total cost."""
+    results: dict[str, ForecastTargetOptimizationResult] = {}
     for article_id, config in articles.items():
-        policy = config.policy
-        if not isinstance(policy, QuantileForecastPolicy):
-            raise TypeError(
-                "Quantile optimization requires QuantileForecastPolicy policies."
-            )
-        best_result: QuantileOptimizationResult | None = None
-        for quantile in quantiles:
-            candidate_policy = QuantileForecastPolicy(
-                mean_forecast=policy.mean_forecast,
-                quantile_forecasts=policy.quantile_forecasts,
+        if not config.forecast_candidates:
+            raise ValueError("Forecast candidates must be provided.")
+        targets = (
+            list(candidate_targets)
+            if candidate_targets is not None
+            else list(config.forecast_candidates.keys())
+        )
+        if not targets:
+            raise ValueError("Candidate targets must be provided.")
+
+        best_result: ForecastTargetOptimizationResult | None = None
+        for target in targets:
+            if target not in config.forecast_candidates:
+                raise ValueError(f"Unknown forecast target: {target}")
+            candidate_policy = ForecastSeriesPolicy(
+                forecast=config.forecast_candidates[target],
                 lead_time=config.lead_time,
-                target_quantile=quantile,
             )
             simulation = simulate_replenishment(
                 periods=config.periods,
@@ -109,14 +125,16 @@ def optimize_quantile_levels(
                 stockout_cost_per_unit=config.stockout_cost_per_unit,
             )
             if best_result is None:
-                best_result = QuantileOptimizationResult(
-                    quantile=quantile,
+                best_result = ForecastTargetOptimizationResult(
+                    target=target,
+                    policy=candidate_policy,
                     simulation=simulation,
                 )
                 continue
             if simulation.summary.total_cost < best_result.simulation.summary.total_cost:
-                best_result = QuantileOptimizationResult(
-                    quantile=quantile,
+                best_result = ForecastTargetOptimizationResult(
+                    target=target,
+                    policy=candidate_policy,
                     simulation=simulation,
                 )
         if best_result is None:

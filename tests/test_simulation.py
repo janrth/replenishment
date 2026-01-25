@@ -1,10 +1,11 @@
 from replenishment import (
     ArticleSimulationConfig,
     ForecastBasedPolicy,
+    ForecastCandidatesConfig,
+    ForecastSeriesPolicy,
     InventoryState,
-    QuantileForecastPolicy,
     ReorderPointPolicy,
-    optimize_quantile_levels,
+    optimize_forecast_targets,
     optimize_service_level_factors,
     simulate_replenishment,
 )
@@ -42,6 +43,18 @@ def test_forecast_based_policy_orders_forecast_plus_safety_stock():
 
     assert policy.order_quantity_for(state_period0) == 12
     assert policy.order_quantity_for(state_period1) == 12
+
+
+def test_forecast_based_policy_uses_last_forecast_value_for_horizon():
+    policy = ForecastBasedPolicy(
+        forecast=[18, 22, 20, 19, 21, 23],
+        actuals=[20, 21, 19, 18, 22, 24],
+        lead_time=1,
+        service_level_factor=0.0,
+    )
+    state_period5 = InventoryState(period=5, on_hand=0, on_order=0, backorders=0)
+
+    assert policy.order_quantity_for(state_period5) == 23
 
 
 def test_optimize_service_level_factors_selects_lowest_cost():
@@ -90,65 +103,34 @@ def test_optimize_service_level_factors_selects_lowest_cost():
     assert result.service_level_factor == expected_factor
 
 
-def test_quantile_forecast_policy_orders_target_quantile():
-    policy = QuantileForecastPolicy(
-        mean_forecast=[10, 10, 10],
-        quantile_forecasts={
-            0.5: [9, 10, 11],
-            0.9: [12, 13, 14],
-        },
-        lead_time=1,
-        target_quantile=0.9,
-    )
+def test_forecast_series_policy_orders_forecast():
+    policy = ForecastSeriesPolicy(forecast=[10, 12], lead_time=1)
     state_period0 = InventoryState(period=0, on_hand=0, on_order=0, backorders=0)
 
-    assert policy.order_quantity_for(state_period0) == 13
+    assert policy.order_quantity_for(state_period0) == 12
 
 
-def test_optimize_quantile_levels_selects_lowest_cost():
-    mean_forecast = [10, 10, 10, 10, 10]
-    quantiles = {
-        0.5: [9, 9, 9, 9, 9],
-        0.9: [12, 12, 12, 12, 12],
-    }
-    candidates = [0.5, 0.9]
-    base_policy = QuantileForecastPolicy(
-        mean_forecast=mean_forecast,
-        quantile_forecasts=quantiles,
-        lead_time=1,
-        target_quantile=0.5,
-    )
-    config = ArticleSimulationConfig(
-        periods=4,
-        demand=[8, 11, 9, 10],
-        initial_on_hand=5,
-        lead_time=1,
-        policy=base_policy,
-        holding_cost_per_unit=2.0,
-        stockout_cost_per_unit=2.0,
+def test_forecast_series_policy_uses_last_value_for_horizon():
+    policy = ForecastSeriesPolicy(forecast=[10, 12], lead_time=1)
+    state_period1 = InventoryState(period=1, on_hand=0, on_order=0, backorders=0)
+
+    assert policy.order_quantity_for(state_period1) == 12
+
+
+def test_optimize_forecast_targets_selects_lowest_cost():
+    config = ForecastCandidatesConfig(
+        periods=2,
+        demand=[10, 10],
+        initial_on_hand=0,
+        lead_time=0,
+        forecast_candidates={
+            "mean": [10, 10],
+            "45-high": [20, 20],
+        },
+        holding_cost_per_unit=1.0,
+        stockout_cost_per_unit=0.0,
     )
 
-    results = optimize_quantile_levels({"A": config}, candidates)
-    result = results["A"]
+    results = optimize_forecast_targets({"A": config})
 
-    candidate_costs = []
-    for quantile in candidates:
-        policy = QuantileForecastPolicy(
-            mean_forecast=mean_forecast,
-            quantile_forecasts=quantiles,
-            lead_time=1,
-            target_quantile=quantile,
-        )
-        simulation = simulate_replenishment(
-            periods=config.periods,
-            demand=config.demand,
-            initial_on_hand=config.initial_on_hand,
-            lead_time=config.lead_time,
-            policy=policy,
-            holding_cost_per_unit=config.holding_cost_per_unit,
-            stockout_cost_per_unit=config.stockout_cost_per_unit,
-        )
-        candidate_costs.append(simulation.summary.total_cost)
-
-    expected_quantile = candidates[candidate_costs.index(min(candidate_costs))]
-    assert result.quantile == expected_quantile
+    assert results["A"].target == "mean"
