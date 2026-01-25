@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -55,6 +55,17 @@ class SimulationSummary:
 class SimulationResult:
     snapshots: Sequence[InventorySnapshot]
     summary: SimulationSummary
+
+
+@dataclass(frozen=True)
+class ArticleSimulationConfig:
+    periods: int
+    demand: Iterable[int] | DemandModel
+    initial_on_hand: int
+    lead_time: int
+    policy: OrderingPolicy
+    holding_cost_per_unit: float = 0.0
+    stockout_cost_per_unit: float = 0.0
 
 
 def _normalize_demand(demand: Iterable[int] | DemandModel) -> DemandModel:
@@ -165,3 +176,20 @@ def simulate_replenishment(
     )
 
     return SimulationResult(snapshots=snapshots, summary=summary)
+
+
+def simulate_replenishment_for_articles(
+    articles: Mapping[str, ArticleSimulationConfig],
+) -> dict[str, SimulationResult]:
+    results: dict[str, SimulationResult] = {}
+    for article_id, config in articles.items():
+        results[article_id] = simulate_replenishment(
+            periods=config.periods,
+            demand=config.demand,
+            initial_on_hand=config.initial_on_hand,
+            lead_time=config.lead_time,
+            policy=config.policy,
+            holding_cost_per_unit=config.holding_cost_per_unit,
+            stockout_cost_per_unit=config.stockout_cost_per_unit,
+        )
+    return results
