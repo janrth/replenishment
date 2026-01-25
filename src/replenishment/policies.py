@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 import math
 import statistics
@@ -75,3 +75,37 @@ class ForecastBasedPolicy:
         forecast_qty = self._forecast_model(target_period)
         safety_stock = self._safety_stock(state.period)
         return max(0, int(math.ceil(forecast_qty + safety_stock)))
+
+
+@dataclass(frozen=True)
+class QuantileForecastPolicy:
+    """Order to a target demand percentile from a distributional forecast."""
+
+    mean_forecast: Iterable[int] | DemandModel
+    quantile_forecasts: Mapping[float, Iterable[int] | DemandModel]
+    lead_time: int = 0
+    target_quantile: float = 0.5
+    _mean_model: DemandModel = field(init=False, repr=False)
+    _quantile_models: dict[float, DemandModel] = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.lead_time < 0:
+            raise ValueError("Lead time cannot be negative.")
+        if not 0 <= self.target_quantile <= 1:
+            raise ValueError("Target quantile must be between 0 and 1.")
+        if not self.quantile_forecasts:
+            raise ValueError("Quantile forecasts must be provided.")
+        quantile_models: dict[float, DemandModel] = {}
+        for quantile, series in self.quantile_forecasts.items():
+            if not 0 <= quantile <= 1:
+                raise ValueError("Quantile levels must be between 0 and 1.")
+            quantile_models[quantile] = _normalize_series(series)
+        if self.target_quantile not in quantile_models:
+            raise ValueError("Target quantile is not available in forecasts.")
+        object.__setattr__(self, "_mean_model", _normalize_series(self.mean_forecast))
+        object.__setattr__(self, "_quantile_models", quantile_models)
+
+    def order_quantity_for(self, state: InventoryState) -> int:
+        target_period = state.period + self.lead_time
+        forecast_qty = self._quantile_models[self.target_quantile](target_period)
+        return max(0, int(math.ceil(forecast_qty)))
