@@ -1,6 +1,10 @@
 """Replenishment simulation library."""
 
 from .policies import ForecastBasedPolicy, ReorderPointPolicy
+from .optimization import (
+    ServiceLevelOptimizationResult,
+    optimize_service_level_factors,
+)
 from .simulation import (
     ArticleSimulationConfig,
     DemandModel,
@@ -19,6 +23,8 @@ __all__ = [
     "ReorderPointPolicy",
     "SimulationResult",
     "SimulationSummary",
+    "ServiceLevelOptimizationResult",
     "simulate_replenishment",
     "simulate_replenishment_for_articles",
+    "optimize_service_level_factors",
 ]
