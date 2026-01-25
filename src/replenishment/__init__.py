@@ -1,8 +1,10 @@
 """Replenishment simulation library."""
 
-from .policies import ForecastBasedPolicy, ReorderPointPolicy
+from .policies import ForecastBasedPolicy, QuantileForecastPolicy, ReorderPointPolicy
 from .optimization import (
+    QuantileOptimizationResult,
     ServiceLevelOptimizationResult,
+    optimize_quantile_levels,
     optimize_service_level_factors,
 )
 from .simulation import (
@@ -20,11 +22,14 @@ __all__ = [
     "InventoryState",
     "ArticleSimulationConfig",
     "ForecastBasedPolicy",
+    "QuantileForecastPolicy",
     "ReorderPointPolicy",
     "SimulationResult",
     "SimulationSummary",
+    "QuantileOptimizationResult",
     "ServiceLevelOptimizationResult",
     "simulate_replenishment",
     "simulate_replenishment_for_articles",
+    "optimize_quantile_levels",
     "optimize_service_level_factors",
 ]
