@@ -154,6 +154,21 @@ def test_simulation_with_aggregation_groups_demand():
     assert result.summary.total_demand == 21
 
 
+def test_simulation_with_aggregation_truncates_demand_to_periods():
+    policy = ReorderPointPolicy(reorder_point=-1, order_quantity=0)
+    result = simulate_replenishment_with_aggregation(
+        periods=5,
+        demand=[1, 2, 3, 4, 5, 6],
+        initial_on_hand=100,
+        lead_time=0,
+        policy=policy,
+        aggregation_window=3,
+    )
+
+    assert [snapshot.demand for snapshot in result.snapshots] == [6, 9]
+    assert result.summary.total_demand == 15
+
+
 def test_optimize_aggregation_windows_picks_first_best():
     policy = ReorderPointPolicy(reorder_point=-1, order_quantity=0)
     config = ArticleSimulationConfig(
