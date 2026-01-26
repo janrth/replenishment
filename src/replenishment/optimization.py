@@ -388,10 +388,14 @@ def optimize_aggregation_and_forecast_targets(
     for article_id, config in articles.items():
         if not config.forecast_candidates:
             raise ValueError("Forecast candidates must be provided.")
+        candidate_series = {
+            target: list(series) if not callable(series) else series
+            for target, series in config.forecast_candidates.items()
+        }
         targets = (
             list(target_candidates)
             if target_candidates is not None
-            else list(config.forecast_candidates.keys())
+            else list(candidate_series.keys())
         )
         if not targets:
             raise ValueError("Candidate targets must be provided.")
@@ -413,7 +417,7 @@ def optimize_aggregation_and_forecast_targets(
                     window=window,
                     extend_last=True,
                 )
-                for target, forecast in config.forecast_candidates.items()
+                for target, forecast in candidate_series.items()
             }
 
             for target in targets:

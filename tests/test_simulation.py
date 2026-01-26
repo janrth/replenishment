@@ -385,3 +385,25 @@ def test_optimize_aggregation_and_service_level_handles_short_actuals():
     )
 
     assert results["A"].service_level_factor in {0.0, 1.0}
+
+
+def test_optimize_aggregation_and_forecast_targets_handles_generator_series():
+    candidate_configs = {
+        "A": ForecastCandidatesConfig(
+            periods=4,
+            demand=[5, 6, 5, 6],
+            initial_on_hand=0,
+            lead_time=0,
+            forecast_candidates={
+                "p50": (value for value in [5, 6, 5, 6]),
+                "p90": (value for value in [7, 8, 7, 8]),
+            },
+        )
+    }
+
+    results = optimize_aggregation_and_forecast_targets(
+        candidate_configs,
+        candidate_windows=[1, 2],
+    )
+
+    assert results["A"].target in {"p50", "p90"}
