@@ -39,7 +39,29 @@ def test_simulation_summary_consistency():
     assert 0 <= result.summary.fill_rate <= 1
     assert result.summary.holding_cost >= 0
     assert result.summary.stockout_cost >= 0
-    assert result.summary.total_cost == result.summary.holding_cost + result.summary.stockout_cost
+    assert (
+        result.summary.total_cost
+        == result.summary.holding_cost
+        + result.summary.stockout_cost
+        + result.summary.ordering_cost
+    )
+
+
+def test_simulation_includes_ordering_costs():
+    policy = ReorderPointPolicy(reorder_point=5, order_quantity=10)
+    result = simulate_replenishment(
+        periods=2,
+        demand=[6, 6],
+        initial_on_hand=0,
+        lead_time=0,
+        policy=policy,
+        holding_cost_per_unit=0.0,
+        stockout_cost_per_unit=0.0,
+        order_cost_per_order=3.0,
+        order_cost_per_unit=0.5,
+    )
+
+    assert result.summary.ordering_cost == 2 * (3.0 + 0.5 * 10)
 
 
 def test_point_forecast_policy_orders_forecast_plus_safety_stock():

@@ -40,6 +40,8 @@ class ForecastCandidatesConfig:
     forecast_candidates: Mapping[float | str, Iterable[int] | DemandModel]
     holding_cost_per_unit: float = 0.0
     stockout_cost_per_unit: float = 0.0
+    order_cost_per_order: float = 0.0
+    order_cost_per_unit: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -118,6 +120,8 @@ def optimize_service_level_factors(
                 policy=candidate_policy,
                 holding_cost_per_unit=config.holding_cost_per_unit,
                 stockout_cost_per_unit=config.stockout_cost_per_unit,
+                order_cost_per_order=config.order_cost_per_order,
+                order_cost_per_unit=config.order_cost_per_unit,
             )
             if best_result is None:
                 best_result = PointForecastOptimizationResult(
@@ -177,6 +181,8 @@ def optimize_forecast_targets(
                 policy=candidate_policy,
                 holding_cost_per_unit=config.holding_cost_per_unit,
                 stockout_cost_per_unit=config.stockout_cost_per_unit,
+                order_cost_per_order=config.order_cost_per_order,
+                order_cost_per_unit=config.order_cost_per_unit,
             )
             if best_result is None:
                 best_result = PercentileForecastOptimizationResult(
@@ -242,6 +248,8 @@ def optimize_aggregation_windows(
                 policy=aggregated_policy,
                 holding_cost_per_unit=config.holding_cost_per_unit,
                 stockout_cost_per_unit=config.stockout_cost_per_unit,
+                order_cost_per_order=config.order_cost_per_order,
+                order_cost_per_unit=config.order_cost_per_unit,
             )
             candidate = AggregationWindowOptimizationResult(
                 window=window,
@@ -348,6 +356,8 @@ def optimize_aggregation_and_service_level_factors(
                     policy=candidate_policy,
                     holding_cost_per_unit=config.holding_cost_per_unit,
                     stockout_cost_per_unit=config.stockout_cost_per_unit,
+                    order_cost_per_order=config.order_cost_per_order,
+                    order_cost_per_unit=config.order_cost_per_unit,
                 )
                 candidate = AggregationServiceLevelOptimizationResult(
                     window=window,
@@ -435,6 +445,8 @@ def optimize_aggregation_and_forecast_targets(
                     policy=candidate_policy,
                     holding_cost_per_unit=config.holding_cost_per_unit,
                     stockout_cost_per_unit=config.stockout_cost_per_unit,
+                    order_cost_per_order=config.order_cost_per_order,
+                    order_cost_per_unit=config.order_cost_per_unit,
                 )
                 candidate = AggregationForecastTargetOptimizationResult(
                     window=window,

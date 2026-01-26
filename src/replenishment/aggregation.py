@@ -110,6 +110,8 @@ def simulate_replenishment_with_aggregation(
     aggregation_window: int,
     holding_cost_per_unit: float = 0.0,
     stockout_cost_per_unit: float = 0.0,
+    order_cost_per_order: float = 0.0,
+    order_cost_per_unit: float = 0.0,
 ):
     from .simulation import simulate_replenishment
 
@@ -136,4 +138,6 @@ def simulate_replenishment_with_aggregation(
         policy=aggregated_policy,
         holding_cost_per_unit=holding_cost_per_unit,
         stockout_cost_per_unit=stockout_cost_per_unit,
+        order_cost_per_order=order_cost_per_order,
+        order_cost_per_unit=order_cost_per_unit,
     )

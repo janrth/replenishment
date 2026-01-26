@@ -48,6 +48,7 @@ class SimulationSummary:
     average_on_hand: float
     holding_cost: float
     stockout_cost: float
+    ordering_cost: float
     total_cost: float
 
 
@@ -66,6 +67,8 @@ class ArticleSimulationConfig:
     policy: OrderingPolicy
     holding_cost_per_unit: float = 0.0
     stockout_cost_per_unit: float = 0.0
+    order_cost_per_order: float = 0.0
+    order_cost_per_unit: float = 0.0
 
 
 def _normalize_demand(demand: Iterable[int] | DemandModel) -> DemandModel:
@@ -91,12 +94,19 @@ def simulate_replenishment(
     policy: OrderingPolicy,
     holding_cost_per_unit: float = 0.0,
     stockout_cost_per_unit: float = 0.0,
+    order_cost_per_order: float = 0.0,
+    order_cost_per_unit: float = 0.0,
 ) -> SimulationResult:
     if periods <= 0:
         raise ValueError("Periods must be positive.")
     if lead_time < 0:
         raise ValueError("Lead time cannot be negative.")
-    if holding_cost_per_unit < 0 or stockout_cost_per_unit < 0:
+    if (
+        holding_cost_per_unit < 0
+        or stockout_cost_per_unit < 0
+        or order_cost_per_order < 0
+        or order_cost_per_unit < 0
+    ):
         raise ValueError("Cost inputs must be non-negative.")
 
     demand_model = _normalize_demand(demand)
@@ -109,6 +119,7 @@ def simulate_replenishment(
     total_fulfilled = 0
     total_backorders = 0
     on_hand_total = 0
+    ordering_cost_total = 0.0
 
     for period in range(periods):
         received = pipeline.pop(0) if lead_time > 0 else 0
@@ -136,6 +147,10 @@ def simulate_replenishment(
             backorders=backorders,
         )
         order_qty = max(0, policy.order_quantity_for(state))
+        if order_qty > 0:
+            ordering_cost_total += order_cost_per_order + (
+                order_cost_per_unit * order_qty
+            )
         if lead_time == 0:
             on_hand += order_qty
         else:
@@ -162,7 +177,7 @@ def simulate_replenishment(
     average_on_hand = on_hand_total / periods
     holding_cost = on_hand_total * holding_cost_per_unit
     stockout_cost = total_backorders * stockout_cost_per_unit
-    total_cost = holding_cost + stockout_cost
+    total_cost = holding_cost + stockout_cost + ordering_cost_total
 
     summary = SimulationSummary(
         total_demand=total_demand,
@@ -172,6 +187,7 @@ def simulate_replenishment(
         average_on_hand=average_on_hand,
         holding_cost=holding_cost,
         stockout_cost=stockout_cost,
+        ordering_cost=ordering_cost_total,
         total_cost=total_cost,
     )
 
@@ -191,5 +207,7 @@ def simulate_replenishment_for_articles(
             policy=config.policy,
             holding_cost_per_unit=config.holding_cost_per_unit,
             stockout_cost_per_unit=config.stockout_cost_per_unit,
+            order_cost_per_order=config.order_cost_per_order,
+            order_cost_per_unit=config.order_cost_per_unit,
         )
     return results
