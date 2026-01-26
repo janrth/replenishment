@@ -39,10 +39,36 @@ print(result.summary)
 ```python
 from replenishment import PointForecastOptimizationPolicy, simulate_replenishment
 
+# Point-forecast optimization uses a safety stock buffer. The
+# service_level_factor is used to optimize the safety stock, so the policy
+# orders the point forecast plus the safety stock amount.
+
 policy = PointForecastOptimizationPolicy(
     forecast=[18, 20, 22, 21, 19, 17],
     actuals=[16, 19, 24, 20, 18, 15],
     service_level_factor=0.95,
+)
+result = simulate_replenishment(
+    periods=6,
+    demand=[16, 19, 24, 20, 18, 15],
+    initial_on_hand=30,
+    lead_time=1,
+    policy=policy,
+)
+
+print(result.summary)
+```
+
+```python
+from replenishment import PercentileForecastOptimizationPolicy, simulate_replenishment
+
+# Percentile-forecast optimization orders directly from the percentile target.
+# No safety stock is used; the order quantity is the chosen percentile forecast
+# for each period.
+
+policy = PercentileForecastOptimizationPolicy(
+    forecast=[18, 20, 22, 21, 19, 17],
+    lead_time=1,
 )
 result = simulate_replenishment(
     periods=6,
