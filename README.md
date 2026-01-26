@@ -81,6 +81,68 @@ result = simulate_replenishment(
 print(result.summary)
 ```
 
+```python
+from replenishment import (
+    ArticleSimulationConfig,
+    ForecastCandidatesConfig,
+    PointForecastOptimizationPolicy,
+    optimize_aggregation_windows,
+    optimize_forecast_targets,
+    optimize_service_level_factors,
+    simulate_replenishment_with_aggregation,
+)
+
+# Optimize point-forecast service levels (safety stock factors).
+service_level_config = {
+    "A": ArticleSimulationConfig(
+        periods=6,
+        demand=[16, 19, 24, 20, 18, 15],
+        initial_on_hand=30,
+        lead_time=1,
+        policy=PointForecastOptimizationPolicy(
+            forecast=[18, 20, 22, 21, 19, 17],
+            actuals=[16, 19, 24, 20, 18, 15],
+            service_level_factor=0.9,
+        ),
+    )
+}
+service_level_result = optimize_service_level_factors(
+    service_level_config,
+    candidate_factors=[0.8, 0.9, 0.95],
+)
+
+# Optimize percentile forecast targets.
+percentile_config = ForecastCandidatesConfig(
+    periods=6,
+    demand=[16, 19, 24, 20, 18, 15],
+    initial_on_hand=30,
+    lead_time=1,
+    forecast_candidates={
+        "p50": [16, 18, 20, 19, 18, 16],
+        "p90": [22, 24, 26, 25, 23, 21],
+    },
+)
+percentile_result = optimize_forecast_targets({"A": percentile_config})
+
+# Optimize order-cycle (time aggregation) windows. Use this when you want to
+# decide how often to order while still aggregating demand and lead time.
+aggregation_result = optimize_aggregation_windows(
+    service_level_config,
+    candidate_windows=[1, 2, 3],
+)
+
+# Or hard-code an aggregation window if the ordering cadence is fixed.
+hard_coded_window = 2
+aggregated = simulate_replenishment_with_aggregation(
+    periods=6,
+    demand=[16, 19, 24, 20, 18, 15],
+    initial_on_hand=30,
+    lead_time=1,
+    policy=service_level_config["A"].policy,
+    aggregation_window=hard_coded_window,
+)
+```
+
 ## Notebook
 
 See `notebooks/stock_replenishment_example.ipynb` for a runnable example.
