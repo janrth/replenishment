@@ -66,6 +66,22 @@ class AggregationWindowOptimizationResult:
     )
 
 
+@dataclass(frozen=True)
+class AggregationServiceLevelOptimizationResult:
+    window: int
+    service_level_factor: float
+    policy: PointForecastOptimizationPolicy
+    simulation: SimulationResult
+
+
+@dataclass(frozen=True)
+class AggregationForecastTargetOptimizationResult:
+    window: int
+    target: float | str
+    policy: PercentileForecastOptimizationPolicy
+    simulation: SimulationResult
+
+
 def optimize_service_level_factors(
     articles: Mapping[str, ArticleSimulationConfig],
     candidate_factors: Iterable[float],
@@ -250,4 +266,193 @@ def optimize_aggregation_windows(
         if best_result is None:
             raise RuntimeError("No optimization result computed.")
         results[article_id] = best_result
+    return results
+
+
+def optimize_aggregation_and_service_level_factors(
+    articles: Mapping[str, ArticleSimulationConfig],
+    candidate_windows: Iterable[int],
+    candidate_factors: Iterable[float],
+) -> dict[str, AggregationServiceLevelOptimizationResult]:
+    """Pick the aggregation window and service-level factor that minimize total cost."""
+    windows = list(candidate_windows)
+    if not windows:
+        raise ValueError("Aggregation windows must be provided.")
+    if any(window <= 0 for window in windows):
+        raise ValueError("Aggregation windows must be positive.")
+
+    factors = list(candidate_factors)
+    if not factors:
+        raise ValueError("Candidate factors must be provided.")
+    if any(factor < 0 for factor in factors):
+        raise ValueError("Service level factors must be non-negative.")
+
+    results: dict[str, AggregationServiceLevelOptimizationResult] = {}
+    for article_id, config in articles.items():
+        policy = config.policy
+        if not isinstance(
+            policy, (ForecastBasedPolicy, PointForecastOptimizationPolicy)
+        ):
+            raise TypeError(
+                "Aggregation with service-level optimization requires point-forecast policies."
+            )
+
+        best_result: AggregationServiceLevelOptimizationResult | None = None
+        for window in windows:
+            aggregated_forecast = aggregate_series(
+                policy.forecast,
+                periods=config.periods,
+                window=window,
+                extend_last=True,
+            )
+            if callable(policy.actuals):
+                aggregated_actuals = aggregate_series(
+                    policy.actuals,
+                    periods=config.periods,
+                    window=window,
+                    extend_last=False,
+                )
+            else:
+                actual_values = list(policy.actuals)
+                if not actual_values:
+                    aggregated_actuals = []
+                else:
+                    actual_periods = min(config.periods, len(actual_values))
+                    aggregated_actuals = aggregate_series(
+                        actual_values,
+                        periods=actual_periods,
+                        window=window,
+                        extend_last=False,
+                    )
+            aggregated_demand = aggregate_series(
+                config.demand,
+                periods=config.periods,
+                window=window,
+                extend_last=False,
+            )
+            aggregated_periods = aggregate_periods(config.periods, window)
+            aggregated_lead_time = aggregate_lead_time(config.lead_time, window)
+
+            for factor in factors:
+                candidate_policy = PointForecastOptimizationPolicy(
+                    forecast=aggregated_forecast,
+                    actuals=aggregated_actuals,
+                    lead_time=aggregated_lead_time,
+                    service_level_factor=factor,
+                )
+                simulation = simulate_replenishment(
+                    periods=aggregated_periods,
+                    demand=aggregated_demand,
+                    initial_on_hand=config.initial_on_hand,
+                    lead_time=aggregated_lead_time,
+                    policy=candidate_policy,
+                    holding_cost_per_unit=config.holding_cost_per_unit,
+                    stockout_cost_per_unit=config.stockout_cost_per_unit,
+                )
+                candidate = AggregationServiceLevelOptimizationResult(
+                    window=window,
+                    service_level_factor=factor,
+                    policy=candidate_policy,
+                    simulation=simulation,
+                )
+                if best_result is None:
+                    best_result = candidate
+                    continue
+                if (
+                    simulation.summary.total_cost
+                    < best_result.simulation.summary.total_cost
+                ):
+                    best_result = candidate
+
+        if best_result is None:
+            raise RuntimeError("No optimization result computed.")
+        results[article_id] = best_result
+
+    return results
+
+
+def optimize_aggregation_and_forecast_targets(
+    articles: Mapping[str, ForecastCandidatesConfig],
+    candidate_windows: Iterable[int],
+    candidate_targets: Iterable[float | str] | None = None,
+) -> dict[str, AggregationForecastTargetOptimizationResult]:
+    """Pick the aggregation window and forecast target that minimize total cost."""
+    windows = list(candidate_windows)
+    if not windows:
+        raise ValueError("Aggregation windows must be provided.")
+    if any(window <= 0 for window in windows):
+        raise ValueError("Aggregation windows must be positive.")
+
+    target_candidates = list(candidate_targets) if candidate_targets is not None else None
+    results: dict[str, AggregationForecastTargetOptimizationResult] = {}
+    for article_id, config in articles.items():
+        if not config.forecast_candidates:
+            raise ValueError("Forecast candidates must be provided.")
+        candidate_series = {
+            target: list(series) if not callable(series) else series
+            for target, series in config.forecast_candidates.items()
+        }
+        targets = (
+            list(target_candidates)
+            if target_candidates is not None
+            else list(candidate_series.keys())
+        )
+        if not targets:
+            raise ValueError("Candidate targets must be provided.")
+
+        best_result: AggregationForecastTargetOptimizationResult | None = None
+        for window in windows:
+            aggregated_periods = aggregate_periods(config.periods, window)
+            aggregated_lead_time = aggregate_lead_time(config.lead_time, window)
+            aggregated_demand = aggregate_series(
+                config.demand,
+                periods=config.periods,
+                window=window,
+                extend_last=False,
+            )
+            aggregated_candidates = {
+                target: aggregate_series(
+                    forecast,
+                    periods=config.periods,
+                    window=window,
+                    extend_last=True,
+                )
+                for target, forecast in candidate_series.items()
+            }
+
+            for target in targets:
+                if target not in aggregated_candidates:
+                    raise ValueError(f"Unknown forecast target: {target}")
+                candidate_policy = PercentileForecastOptimizationPolicy(
+                    forecast=aggregated_candidates[target],
+                    lead_time=aggregated_lead_time,
+                )
+                simulation = simulate_replenishment(
+                    periods=aggregated_periods,
+                    demand=aggregated_demand,
+                    initial_on_hand=config.initial_on_hand,
+                    lead_time=aggregated_lead_time,
+                    policy=candidate_policy,
+                    holding_cost_per_unit=config.holding_cost_per_unit,
+                    stockout_cost_per_unit=config.stockout_cost_per_unit,
+                )
+                candidate = AggregationForecastTargetOptimizationResult(
+                    window=window,
+                    target=target,
+                    policy=candidate_policy,
+                    simulation=simulation,
+                )
+                if best_result is None:
+                    best_result = candidate
+                    continue
+                if (
+                    simulation.summary.total_cost
+                    < best_result.simulation.summary.total_cost
+                ):
+                    best_result = candidate
+
+        if best_result is None:
+            raise RuntimeError("No optimization result computed.")
+        results[article_id] = best_result
+
     return results

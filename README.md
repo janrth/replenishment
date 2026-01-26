@@ -86,6 +86,8 @@ from replenishment import (
     ArticleSimulationConfig,
     ForecastCandidatesConfig,
     PointForecastOptimizationPolicy,
+    optimize_aggregation_and_forecast_targets,
+    optimize_aggregation_and_service_level_factors,
     optimize_aggregation_windows,
     optimize_forecast_targets,
     optimize_service_level_factors,
@@ -128,6 +130,19 @@ percentile_result = optimize_forecast_targets({"A": percentile_config})
 # decide how often to order while still aggregating demand and lead time.
 aggregation_result = optimize_aggregation_windows(
     service_level_config,
+    candidate_windows=[1, 2, 3],
+)
+
+# Optimize aggregation window and service-level factor together.
+aggregation_service_level_result = optimize_aggregation_and_service_level_factors(
+    service_level_config,
+    candidate_windows=[1, 2, 3],
+    candidate_factors=[0.8, 0.9, 0.95],
+)
+
+# Optimize aggregation window and forecast percentile together.
+aggregation_percentile_result = optimize_aggregation_and_forecast_targets(
+    {"A": percentile_config},
     candidate_windows=[1, 2, 3],
 )
 

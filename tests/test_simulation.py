@@ -5,6 +5,8 @@ from replenishment import (
     PercentileForecastOptimizationPolicy,
     PointForecastOptimizationPolicy,
     ReorderPointPolicy,
+    optimize_aggregation_and_forecast_targets,
+    optimize_aggregation_and_service_level_factors,
     simulate_replenishment_with_aggregation,
     optimize_aggregation_windows,
     optimize_forecast_targets,
@@ -12,6 +14,11 @@ from replenishment import (
     percentile_forecast_optimisation,
     point_forecast_optimisation,
     simulate_replenishment,
+)
+from replenishment.aggregation import (
+    aggregate_lead_time,
+    aggregate_periods,
+    aggregate_series,
 )
 
 
@@ -191,3 +198,212 @@ def test_optimize_aggregation_windows_picks_first_best():
 
     assert results["A"].window == 1
     assert len(results["A"].simulation.snapshots) == 4
+
+
+def test_optimize_aggregation_and_service_level_factors_picks_lowest_cost():
+    forecast = [10, 10, 10, 10]
+    actuals = [8, 12, 9, 11]
+    base_policy = PointForecastOptimizationPolicy(
+        forecast=forecast,
+        actuals=actuals,
+        lead_time=1,
+        service_level_factor=0.0,
+    )
+    config = ArticleSimulationConfig(
+        periods=4,
+        demand=actuals,
+        initial_on_hand=0,
+        lead_time=1,
+        policy=base_policy,
+        holding_cost_per_unit=1.0,
+        stockout_cost_per_unit=2.0,
+    )
+    windows = [1, 2]
+    factors = [0.0, 2.0]
+
+    results = optimize_aggregation_and_service_level_factors(
+        {"A": config},
+        candidate_windows=windows,
+        candidate_factors=factors,
+    )
+    result = results["A"]
+
+    candidate_costs = {}
+    for window in windows:
+        aggregated_forecast = aggregate_series(
+            forecast,
+            periods=config.periods,
+            window=window,
+            extend_last=True,
+        )
+        aggregated_actuals = aggregate_series(
+            actuals,
+            periods=config.periods,
+            window=window,
+            extend_last=False,
+        )
+        aggregated_demand = aggregate_series(
+            config.demand,
+            periods=config.periods,
+            window=window,
+            extend_last=False,
+        )
+        aggregated_periods = aggregate_periods(config.periods, window)
+        aggregated_lead_time = aggregate_lead_time(config.lead_time, window)
+        for factor in factors:
+            policy = PointForecastOptimizationPolicy(
+                forecast=aggregated_forecast,
+                actuals=aggregated_actuals,
+                lead_time=aggregated_lead_time,
+                service_level_factor=factor,
+            )
+            simulation = simulate_replenishment(
+                periods=aggregated_periods,
+                demand=aggregated_demand,
+                initial_on_hand=config.initial_on_hand,
+                lead_time=aggregated_lead_time,
+                policy=policy,
+                holding_cost_per_unit=config.holding_cost_per_unit,
+                stockout_cost_per_unit=config.stockout_cost_per_unit,
+            )
+            candidate_costs[(window, factor)] = simulation.summary.total_cost
+
+    expected_window, expected_factor = min(
+        candidate_costs, key=candidate_costs.get
+    )
+    assert result.window == expected_window
+    assert result.service_level_factor == expected_factor
+
+
+def test_optimize_aggregation_and_forecast_targets_picks_lowest_cost():
+    config = ForecastCandidatesConfig(
+        periods=4,
+        demand=[5, 5, 5, 5],
+        initial_on_hand=0,
+        lead_time=0,
+        forecast_candidates={
+            "p50": [5, 5, 5, 5],
+            "p90": [8, 8, 8, 8],
+        },
+        holding_cost_per_unit=1.0,
+        stockout_cost_per_unit=0.5,
+    )
+    windows = [1, 2]
+
+    results = optimize_aggregation_and_forecast_targets(
+        {"A": config},
+        candidate_windows=windows,
+    )
+    result = results["A"]
+
+    candidate_costs = {}
+    for window in windows:
+        aggregated_demand = aggregate_series(
+            config.demand,
+            periods=config.periods,
+            window=window,
+            extend_last=False,
+        )
+        aggregated_periods = aggregate_periods(config.periods, window)
+        aggregated_lead_time = aggregate_lead_time(config.lead_time, window)
+        for target, forecast in config.forecast_candidates.items():
+            aggregated_forecast = aggregate_series(
+                forecast,
+                periods=config.periods,
+                window=window,
+                extend_last=True,
+            )
+            policy = PercentileForecastOptimizationPolicy(
+                forecast=aggregated_forecast,
+                lead_time=aggregated_lead_time,
+            )
+            simulation = simulate_replenishment(
+                periods=aggregated_periods,
+                demand=aggregated_demand,
+                initial_on_hand=config.initial_on_hand,
+                lead_time=aggregated_lead_time,
+                policy=policy,
+                holding_cost_per_unit=config.holding_cost_per_unit,
+                stockout_cost_per_unit=config.stockout_cost_per_unit,
+            )
+            candidate_costs[(window, target)] = simulation.summary.total_cost
+
+    expected_window, expected_target = min(
+        candidate_costs, key=candidate_costs.get
+    )
+    assert result.window == expected_window
+    assert result.target == expected_target
+
+
+def test_optimize_aggregation_and_forecast_targets_accepts_generator_targets():
+    candidate_configs = {
+        "A": ForecastCandidatesConfig(
+            periods=2,
+            demand=[5, 5],
+            initial_on_hand=0,
+            lead_time=0,
+            forecast_candidates={"p50": [5, 5], "p90": [7, 7]},
+        ),
+        "B": ForecastCandidatesConfig(
+            periods=2,
+            demand=[6, 6],
+            initial_on_hand=0,
+            lead_time=0,
+            forecast_candidates={"p50": [6, 6], "p90": [8, 8]},
+        ),
+    }
+    target_generator = (target for target in ["p50", "p90"])
+
+    results = optimize_aggregation_and_forecast_targets(
+        candidate_configs,
+        candidate_windows=[1],
+        candidate_targets=target_generator,
+    )
+
+    assert set(results.keys()) == {"A", "B"}
+
+
+def test_optimize_aggregation_and_service_level_handles_short_actuals():
+    policy = PointForecastOptimizationPolicy(
+        forecast=[10, 11, 12, 13],
+        actuals=[9, 12],
+        lead_time=1,
+        service_level_factor=0.0,
+    )
+    config = ArticleSimulationConfig(
+        periods=4,
+        demand=[10, 11, 12, 13],
+        initial_on_hand=0,
+        lead_time=1,
+        policy=policy,
+    )
+
+    results = optimize_aggregation_and_service_level_factors(
+        {"A": config},
+        candidate_windows=[1, 2],
+        candidate_factors=[0.0, 1.0],
+    )
+
+    assert results["A"].service_level_factor in {0.0, 1.0}
+
+
+def test_optimize_aggregation_and_forecast_targets_handles_generator_series():
+    candidate_configs = {
+        "A": ForecastCandidatesConfig(
+            periods=4,
+            demand=[5, 6, 5, 6],
+            initial_on_hand=0,
+            lead_time=0,
+            forecast_candidates={
+                "p50": (value for value in [5, 6, 5, 6]),
+                "p90": (value for value in [7, 8, 7, 8]),
+            },
+        )
+    }
+
+    results = optimize_aggregation_and_forecast_targets(
+        candidate_configs,
+        candidate_windows=[1, 2],
+    )
+
+    assert results["A"].target in {"p50", "p90"}
