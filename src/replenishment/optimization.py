@@ -5,6 +5,12 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
+from .aggregation import (
+    aggregate_lead_time,
+    aggregate_periods,
+    aggregate_policy,
+    aggregate_series,
+)
 from .policies import ForecastBasedPolicy, ForecastSeriesPolicy
 from .simulation import ArticleSimulationConfig, DemandModel, SimulationResult, simulate_replenishment
 
@@ -36,6 +42,13 @@ class ForecastTargetOptimizationResult:
     target: float | str
     policy: ForecastSeriesPolicy
     simulation: SimulationResult
+
+
+@dataclass(frozen=True)
+class AggregationWindowOptimizationResult:
+    window: int
+    simulation: SimulationResult
+    policy: ForecastSeriesPolicy | ForecastBasedPolicy | None
 
 
 def optimize_service_level_factors(
@@ -137,6 +150,64 @@ def optimize_forecast_targets(
                     policy=candidate_policy,
                     simulation=simulation,
                 )
+        if best_result is None:
+            raise RuntimeError("No optimization result computed.")
+        results[article_id] = best_result
+    return results
+
+
+def optimize_aggregation_windows(
+    articles: Mapping[str, ArticleSimulationConfig],
+    candidate_windows: Iterable[int],
+) -> dict[str, AggregationWindowOptimizationResult]:
+    """Pick the aggregation window that minimizes total cost."""
+    windows = list(candidate_windows)
+    if not windows:
+        raise ValueError("Aggregation windows must be provided.")
+    if any(window <= 0 for window in windows):
+        raise ValueError("Aggregation windows must be positive.")
+
+    results: dict[str, AggregationWindowOptimizationResult] = {}
+    for article_id, config in articles.items():
+        best_result: AggregationWindowOptimizationResult | None = None
+        for window in windows:
+            aggregated_demand = aggregate_series(
+                config.demand,
+                periods=config.periods,
+                window=window,
+                extend_last=False,
+            )
+            aggregated_policy = aggregate_policy(
+                config.policy,
+                periods=config.periods,
+                window=window,
+                lead_time=config.lead_time,
+            )
+            aggregated_periods = aggregate_periods(config.periods, window)
+            aggregated_lead_time = aggregate_lead_time(config.lead_time, window)
+            simulation = simulate_replenishment(
+                periods=aggregated_periods,
+                demand=aggregated_demand,
+                initial_on_hand=config.initial_on_hand,
+                lead_time=aggregated_lead_time,
+                policy=aggregated_policy,
+                holding_cost_per_unit=config.holding_cost_per_unit,
+                stockout_cost_per_unit=config.stockout_cost_per_unit,
+            )
+            candidate = AggregationWindowOptimizationResult(
+                window=window,
+                simulation=simulation,
+                policy=aggregated_policy
+                if isinstance(
+                    aggregated_policy, (ForecastSeriesPolicy, ForecastBasedPolicy)
+                )
+                else None,
+            )
+            if best_result is None:
+                best_result = candidate
+                continue
+            if simulation.summary.total_cost < best_result.simulation.summary.total_cost:
+                best_result = candidate
         if best_result is None:
             raise RuntimeError("No optimization result computed.")
         results[article_id] = best_result

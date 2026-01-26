@@ -6,10 +6,13 @@ from .policies import (
     ForecastSeriesPolicy,
     ReorderPointPolicy,
 )
+from .aggregation import simulate_replenishment_with_aggregation
 from .optimization import (
+    AggregationWindowOptimizationResult,
     ForecastCandidatesConfig,
     ForecastTargetOptimizationResult,
     ServiceLevelOptimizationResult,
+    optimize_aggregation_windows,
     optimize_forecast_targets,
     optimize_service_level_factors,
 )
@@ -35,9 +38,12 @@ __all__ = [
     "SimulationSummary",
     "ForecastCandidatesConfig",
     "ForecastTargetOptimizationResult",
+    "AggregationWindowOptimizationResult",
     "ServiceLevelOptimizationResult",
     "simulate_replenishment",
+    "simulate_replenishment_with_aggregation",
     "simulate_replenishment_for_articles",
+    "optimize_aggregation_windows",
     "optimize_forecast_targets",
     "optimize_service_level_factors",
 ]
