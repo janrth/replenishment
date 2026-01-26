@@ -37,6 +37,8 @@ def aggregate_series(
             if not values or not extend_last:
                 raise ValueError("Series shorter than periods.")
             values = values + [values[-1]] * (periods - len(values))
+        elif len(values) > periods:
+            values = values[:periods]
 
     return [
         sum(values[index : index + window]) for index in range(0, periods, window)
