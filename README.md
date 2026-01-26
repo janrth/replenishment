@@ -31,6 +31,7 @@ result = simulate_replenishment(
     initial_on_hand=40,
     lead_time=2,
     policy=policy,
+    order_cost_per_order=12.5,
 )
 
 print(result.summary)
@@ -54,6 +55,7 @@ result = simulate_replenishment(
     initial_on_hand=30,
     lead_time=1,
     policy=policy,
+    order_cost_per_order=10.0,
 )
 
 print(result.summary)
@@ -76,6 +78,7 @@ result = simulate_replenishment(
     initial_on_hand=30,
     lead_time=1,
     policy=policy,
+    order_cost_per_order=8.0,
 )
 
 print(result.summary)
@@ -106,6 +109,7 @@ service_level_config = {
             actuals=[16, 19, 24, 20, 18, 15],
             service_level_factor=0.9,
         ),
+        order_cost_per_order=9.0,
     )
 }
 service_level_result = optimize_service_level_factors(
@@ -123,6 +127,7 @@ percentile_config = ForecastCandidatesConfig(
         "p50": [16, 18, 20, 19, 18, 16],
         "p90": [22, 24, 26, 25, 23, 21],
     },
+    order_cost_per_order=9.0,
 )
 percentile_result = optimize_forecast_targets({"A": percentile_config})
 
@@ -155,6 +160,7 @@ aggregated = simulate_replenishment_with_aggregation(
     lead_time=1,
     policy=service_level_config["A"].policy,
     aggregation_window=hard_coded_window,
+    order_cost_per_order=service_level_config["A"].order_cost_per_order,
 )
 ```
 
