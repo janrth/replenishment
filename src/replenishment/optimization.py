@@ -11,12 +11,17 @@ from .aggregation import (
     aggregate_policy,
     aggregate_series,
 )
-from .policies import ForecastBasedPolicy, ForecastSeriesPolicy
+from .policies import (
+    ForecastBasedPolicy,
+    ForecastSeriesPolicy,
+    PercentileForecastOptimizationPolicy,
+    PointForecastOptimizationPolicy,
+)
 from .simulation import ArticleSimulationConfig, DemandModel, SimulationResult, simulate_replenishment
 
 
 @dataclass(frozen=True)
-class ServiceLevelOptimizationResult:
+class PointForecastOptimizationResult:
     service_level_factor: float
     simulation: SimulationResult
 
@@ -38,40 +43,52 @@ class ForecastCandidatesConfig:
 
 
 @dataclass(frozen=True)
-class ForecastTargetOptimizationResult:
+class PercentileForecastOptimizationResult:
     target: float | str
-    policy: ForecastSeriesPolicy
+    policy: PercentileForecastOptimizationPolicy
     simulation: SimulationResult
+
+
+ServiceLevelOptimizationResult = PointForecastOptimizationResult
+ForecastTargetOptimizationResult = PercentileForecastOptimizationResult
 
 
 @dataclass(frozen=True)
 class AggregationWindowOptimizationResult:
     window: int
     simulation: SimulationResult
-    policy: ForecastSeriesPolicy | ForecastBasedPolicy | None
+    policy: (
+        ForecastSeriesPolicy
+        | ForecastBasedPolicy
+        | PointForecastOptimizationPolicy
+        | PercentileForecastOptimizationPolicy
+        | None
+    )
 
 
 def optimize_service_level_factors(
     articles: Mapping[str, ArticleSimulationConfig],
     candidate_factors: Iterable[float],
-) -> dict[str, ServiceLevelOptimizationResult]:
-    """Pick the service level factor per article that minimizes total cost."""
+) -> dict[str, PointForecastOptimizationResult]:
+    """Pick the point-forecast safety stock factor that minimizes total cost."""
     factors = list(candidate_factors)
     if not factors:
         raise ValueError("Candidate factors must be provided.")
     if any(factor < 0 for factor in factors):
         raise ValueError("Service level factors must be non-negative.")
 
-    results: dict[str, ServiceLevelOptimizationResult] = {}
+    results: dict[str, PointForecastOptimizationResult] = {}
     for article_id, config in articles.items():
         policy = config.policy
-        if not isinstance(policy, ForecastBasedPolicy):
+        if not isinstance(
+            policy, (ForecastBasedPolicy, PointForecastOptimizationPolicy)
+        ):
             raise TypeError(
-                "Service level optimization requires ForecastBasedPolicy policies."
+                "Point forecast optimization requires point-forecast policies."
             )
-        best_result: ServiceLevelOptimizationResult | None = None
+        best_result: PointForecastOptimizationResult | None = None
         for factor in factors:
-            candidate_policy = ForecastBasedPolicy(
+            candidate_policy = PointForecastOptimizationPolicy(
                 forecast=policy.forecast,
                 actuals=policy.actuals,
                 lead_time=config.lead_time,
@@ -87,13 +104,13 @@ def optimize_service_level_factors(
                 stockout_cost_per_unit=config.stockout_cost_per_unit,
             )
             if best_result is None:
-                best_result = ServiceLevelOptimizationResult(
+                best_result = PointForecastOptimizationResult(
                     service_level_factor=factor,
                     simulation=simulation,
                 )
                 continue
             if simulation.summary.total_cost < best_result.simulation.summary.total_cost:
-                best_result = ServiceLevelOptimizationResult(
+                best_result = PointForecastOptimizationResult(
                     service_level_factor=factor,
                     simulation=simulation,
                 )
@@ -103,12 +120,20 @@ def optimize_service_level_factors(
     return results
 
 
+def point_forecast_optimisation(
+    articles: Mapping[str, ArticleSimulationConfig],
+    candidate_factors: Iterable[float],
+) -> dict[str, PointForecastOptimizationResult]:
+    """Alias for optimizing point-forecast safety stock factors."""
+    return optimize_service_level_factors(articles, candidate_factors)
+
+
 def optimize_forecast_targets(
     articles: Mapping[str, ForecastCandidatesConfig],
     candidate_targets: Iterable[float | str] | None = None,
-) -> dict[str, ForecastTargetOptimizationResult]:
-    """Pick the forecast candidate (mean or quantile) that minimizes total cost."""
-    results: dict[str, ForecastTargetOptimizationResult] = {}
+) -> dict[str, PercentileForecastOptimizationResult]:
+    """Pick the percentile forecast candidate that minimizes total cost."""
+    results: dict[str, PercentileForecastOptimizationResult] = {}
     for article_id, config in articles.items():
         if not config.forecast_candidates:
             raise ValueError("Forecast candidates must be provided.")
@@ -120,11 +145,11 @@ def optimize_forecast_targets(
         if not targets:
             raise ValueError("Candidate targets must be provided.")
 
-        best_result: ForecastTargetOptimizationResult | None = None
+        best_result: PercentileForecastOptimizationResult | None = None
         for target in targets:
             if target not in config.forecast_candidates:
                 raise ValueError(f"Unknown forecast target: {target}")
-            candidate_policy = ForecastSeriesPolicy(
+            candidate_policy = PercentileForecastOptimizationPolicy(
                 forecast=config.forecast_candidates[target],
                 lead_time=config.lead_time,
             )
@@ -138,14 +163,14 @@ def optimize_forecast_targets(
                 stockout_cost_per_unit=config.stockout_cost_per_unit,
             )
             if best_result is None:
-                best_result = ForecastTargetOptimizationResult(
+                best_result = PercentileForecastOptimizationResult(
                     target=target,
                     policy=candidate_policy,
                     simulation=simulation,
                 )
                 continue
             if simulation.summary.total_cost < best_result.simulation.summary.total_cost:
-                best_result = ForecastTargetOptimizationResult(
+                best_result = PercentileForecastOptimizationResult(
                     target=target,
                     policy=candidate_policy,
                     simulation=simulation,
@@ -154,6 +179,14 @@ def optimize_forecast_targets(
             raise RuntimeError("No optimization result computed.")
         results[article_id] = best_result
     return results
+
+
+def percentile_forecast_optimisation(
+    articles: Mapping[str, ForecastCandidatesConfig],
+    candidate_targets: Iterable[float | str] | None = None,
+) -> dict[str, PercentileForecastOptimizationResult]:
+    """Alias for optimizing percentile forecast targets without safety stock."""
+    return optimize_forecast_targets(articles, candidate_targets)
 
 
 def optimize_aggregation_windows(
@@ -199,7 +232,13 @@ def optimize_aggregation_windows(
                 simulation=simulation,
                 policy=aggregated_policy
                 if isinstance(
-                    aggregated_policy, (ForecastSeriesPolicy, ForecastBasedPolicy)
+                    aggregated_policy,
+                    (
+                        ForecastSeriesPolicy,
+                        ForecastBasedPolicy,
+                        PointForecastOptimizationPolicy,
+                        PercentileForecastOptimizationPolicy,
+                    ),
                 )
                 else None,
             )
