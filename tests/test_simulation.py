@@ -5,6 +5,8 @@ from replenishment import (
     ForecastSeriesPolicy,
     InventoryState,
     ReorderPointPolicy,
+    simulate_replenishment_with_aggregation,
+    optimize_aggregation_windows,
     optimize_forecast_targets,
     optimize_service_level_factors,
     simulate_replenishment,
@@ -134,3 +136,37 @@ def test_optimize_forecast_targets_selects_lowest_cost():
     results = optimize_forecast_targets({"A": config})
 
     assert results["A"].target == "mean"
+
+
+def test_simulation_with_aggregation_groups_demand():
+    policy = ReorderPointPolicy(reorder_point=-1, order_quantity=0)
+    result = simulate_replenishment_with_aggregation(
+        periods=6,
+        demand=[1, 2, 3, 4, 5, 6],
+        initial_on_hand=100,
+        lead_time=0,
+        policy=policy,
+        aggregation_window=3,
+    )
+
+    assert len(result.snapshots) == 2
+    assert [snapshot.demand for snapshot in result.snapshots] == [6, 15]
+    assert result.summary.total_demand == 21
+
+
+def test_optimize_aggregation_windows_picks_first_best():
+    policy = ReorderPointPolicy(reorder_point=-1, order_quantity=0)
+    config = ArticleSimulationConfig(
+        periods=4,
+        demand=[1, 1, 1, 1],
+        initial_on_hand=0,
+        lead_time=0,
+        policy=policy,
+        holding_cost_per_unit=0.0,
+        stockout_cost_per_unit=0.0,
+    )
+
+    results = optimize_aggregation_windows({"A": config}, [1, 2])
+
+    assert results["A"].window == 1
+    assert len(results["A"].simulation.snapshots) == 4
