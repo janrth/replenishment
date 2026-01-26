@@ -305,12 +305,25 @@ def optimize_aggregation_and_service_level_factors(
                 window=window,
                 extend_last=True,
             )
-            aggregated_actuals = aggregate_series(
-                policy.actuals,
-                periods=config.periods,
-                window=window,
-                extend_last=False,
-            )
+            if callable(policy.actuals):
+                aggregated_actuals = aggregate_series(
+                    policy.actuals,
+                    periods=config.periods,
+                    window=window,
+                    extend_last=False,
+                )
+            else:
+                actual_values = list(policy.actuals)
+                if not actual_values:
+                    aggregated_actuals = []
+                else:
+                    actual_periods = min(config.periods, len(actual_values))
+                    aggregated_actuals = aggregate_series(
+                        actual_values,
+                        periods=actual_periods,
+                        window=window,
+                        extend_last=False,
+                    )
             aggregated_demand = aggregate_series(
                 config.demand,
                 periods=config.periods,

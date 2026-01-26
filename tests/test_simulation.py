@@ -361,3 +361,27 @@ def test_optimize_aggregation_and_forecast_targets_accepts_generator_targets():
     )
 
     assert set(results.keys()) == {"A", "B"}
+
+
+def test_optimize_aggregation_and_service_level_handles_short_actuals():
+    policy = PointForecastOptimizationPolicy(
+        forecast=[10, 11, 12, 13],
+        actuals=[9, 12],
+        lead_time=1,
+        service_level_factor=0.0,
+    )
+    config = ArticleSimulationConfig(
+        periods=4,
+        demand=[10, 11, 12, 13],
+        initial_on_hand=0,
+        lead_time=1,
+        policy=policy,
+    )
+
+    results = optimize_aggregation_and_service_level_factors(
+        {"A": config},
+        candidate_windows=[1, 2],
+        candidate_factors=[0.0, 1.0],
+    )
+
+    assert results["A"].service_level_factor in {0.0, 1.0}
