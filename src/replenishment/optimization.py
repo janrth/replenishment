@@ -370,13 +370,14 @@ def optimize_aggregation_and_forecast_targets(
     if any(window <= 0 for window in windows):
         raise ValueError("Aggregation windows must be positive.")
 
+    target_candidates = list(candidate_targets) if candidate_targets is not None else None
     results: dict[str, AggregationForecastTargetOptimizationResult] = {}
     for article_id, config in articles.items():
         if not config.forecast_candidates:
             raise ValueError("Forecast candidates must be provided.")
         targets = (
-            list(candidate_targets)
-            if candidate_targets is not None
+            list(target_candidates)
+            if target_candidates is not None
             else list(config.forecast_candidates.keys())
         )
         if not targets:

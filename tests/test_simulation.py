@@ -333,3 +333,31 @@ def test_optimize_aggregation_and_forecast_targets_picks_lowest_cost():
     )
     assert result.window == expected_window
     assert result.target == expected_target
+
+
+def test_optimize_aggregation_and_forecast_targets_accepts_generator_targets():
+    candidate_configs = {
+        "A": ForecastCandidatesConfig(
+            periods=2,
+            demand=[5, 5],
+            initial_on_hand=0,
+            lead_time=0,
+            forecast_candidates={"p50": [5, 5], "p90": [7, 7]},
+        ),
+        "B": ForecastCandidatesConfig(
+            periods=2,
+            demand=[6, 6],
+            initial_on_hand=0,
+            lead_time=0,
+            forecast_candidates={"p50": [6, 6], "p90": [8, 8]},
+        ),
+    }
+    target_generator = (target for target in ["p50", "p90"])
+
+    results = optimize_aggregation_and_forecast_targets(
+        candidate_configs,
+        candidate_windows=[1],
+        candidate_targets=target_generator,
+    )
+
+    assert set(results.keys()) == {"A", "B"}
