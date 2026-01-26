@@ -1,14 +1,16 @@
 from replenishment import (
     ArticleSimulationConfig,
-    ForecastBasedPolicy,
     ForecastCandidatesConfig,
-    ForecastSeriesPolicy,
     InventoryState,
+    PercentileForecastOptimizationPolicy,
+    PointForecastOptimizationPolicy,
     ReorderPointPolicy,
     simulate_replenishment_with_aggregation,
     optimize_aggregation_windows,
     optimize_forecast_targets,
     optimize_service_level_factors,
+    percentile_forecast_optimisation,
+    point_forecast_optimisation,
     simulate_replenishment,
 )
 
@@ -33,8 +35,8 @@ def test_simulation_summary_consistency():
     assert result.summary.total_cost == result.summary.holding_cost + result.summary.stockout_cost
 
 
-def test_forecast_based_policy_orders_forecast_plus_safety_stock():
-    policy = ForecastBasedPolicy(
+def test_point_forecast_policy_orders_forecast_plus_safety_stock():
+    policy = PointForecastOptimizationPolicy(
         forecast=[10, 12, 11],
         actuals=[9, 14, 10],
         lead_time=1,
@@ -47,8 +49,8 @@ def test_forecast_based_policy_orders_forecast_plus_safety_stock():
     assert policy.order_quantity_for(state_period1) == 12
 
 
-def test_forecast_based_policy_uses_last_forecast_value_for_horizon():
-    policy = ForecastBasedPolicy(
+def test_point_forecast_policy_uses_last_forecast_value_for_horizon():
+    policy = PointForecastOptimizationPolicy(
         forecast=[18, 22, 20, 19, 21, 23],
         actuals=[20, 21, 19, 18, 22, 24],
         lead_time=1,
@@ -59,11 +61,11 @@ def test_forecast_based_policy_uses_last_forecast_value_for_horizon():
     assert policy.order_quantity_for(state_period5) == 23
 
 
-def test_optimize_service_level_factors_selects_lowest_cost():
+def test_optimize_point_forecast_selects_lowest_cost():
     forecast = [10, 10, 10, 10, 10]
     actuals = [8, 12, 9, 11, 10]
     candidates = [0.0, 1.5, 3.0]
-    base_policy = ForecastBasedPolicy(
+    base_policy = PointForecastOptimizationPolicy(
         forecast=forecast,
         actuals=actuals,
         lead_time=1,
@@ -79,12 +81,12 @@ def test_optimize_service_level_factors_selects_lowest_cost():
         stockout_cost_per_unit=2.0,
     )
 
-    results = optimize_service_level_factors({"A": config}, candidates)
+    results = point_forecast_optimisation({"A": config}, candidates)
     result = results["A"]
 
     candidate_costs = []
     for factor in candidates:
-        policy = ForecastBasedPolicy(
+        policy = PointForecastOptimizationPolicy(
             forecast=forecast,
             actuals=actuals,
             lead_time=1,
@@ -103,23 +105,25 @@ def test_optimize_service_level_factors_selects_lowest_cost():
 
     expected_factor = candidates[candidate_costs.index(min(candidate_costs))]
     assert result.service_level_factor == expected_factor
+    legacy_results = optimize_service_level_factors({"A": config}, candidates)
+    assert legacy_results["A"].service_level_factor == expected_factor
 
 
-def test_forecast_series_policy_orders_forecast():
-    policy = ForecastSeriesPolicy(forecast=[10, 12], lead_time=1)
+def test_percentile_forecast_policy_orders_forecast():
+    policy = PercentileForecastOptimizationPolicy(forecast=[10, 12], lead_time=1)
     state_period0 = InventoryState(period=0, on_hand=0, on_order=0, backorders=0)
 
     assert policy.order_quantity_for(state_period0) == 12
 
 
-def test_forecast_series_policy_uses_last_value_for_horizon():
-    policy = ForecastSeriesPolicy(forecast=[10, 12], lead_time=1)
+def test_percentile_forecast_policy_uses_last_value_for_horizon():
+    policy = PercentileForecastOptimizationPolicy(forecast=[10, 12], lead_time=1)
     state_period1 = InventoryState(period=1, on_hand=0, on_order=0, backorders=0)
 
     assert policy.order_quantity_for(state_period1) == 12
 
 
-def test_optimize_forecast_targets_selects_lowest_cost():
+def test_optimize_percentile_forecast_selects_lowest_cost():
     config = ForecastCandidatesConfig(
         periods=2,
         demand=[10, 10],
@@ -133,9 +137,11 @@ def test_optimize_forecast_targets_selects_lowest_cost():
         stockout_cost_per_unit=0.0,
     )
 
-    results = optimize_forecast_targets({"A": config})
+    results = percentile_forecast_optimisation({"A": config})
 
     assert results["A"].target == "mean"
+    legacy_results = optimize_forecast_targets({"A": config})
+    assert legacy_results["A"].target == "mean"
 
 
 def test_simulation_with_aggregation_groups_demand():

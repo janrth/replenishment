@@ -5,7 +5,12 @@ from __future__ import annotations
 from collections.abc import Iterable
 import math
 
-from .policies import ForecastBasedPolicy, ForecastSeriesPolicy
+from .policies import (
+    ForecastBasedPolicy,
+    ForecastSeriesPolicy,
+    PercentileForecastOptimizationPolicy,
+    PointForecastOptimizationPolicy,
+)
 from .simulation import DemandModel, OrderingPolicy
 
 
@@ -60,7 +65,7 @@ def aggregate_policy(
     window: int,
     lead_time: int,
 ) -> OrderingPolicy:
-    if isinstance(policy, ForecastBasedPolicy):
+    if isinstance(policy, (ForecastBasedPolicy, PointForecastOptimizationPolicy)):
         aggregated_forecast = aggregate_series(
             policy.forecast,
             periods=periods,
@@ -73,20 +78,22 @@ def aggregate_policy(
             window=window,
             extend_last=False,
         )
-        return ForecastBasedPolicy(
+        return PointForecastOptimizationPolicy(
             forecast=aggregated_forecast,
             actuals=aggregated_actuals,
             lead_time=aggregate_lead_time(lead_time, window),
             service_level_factor=policy.service_level_factor,
         )
-    if isinstance(policy, ForecastSeriesPolicy):
+    if isinstance(
+        policy, (ForecastSeriesPolicy, PercentileForecastOptimizationPolicy)
+    ):
         aggregated_forecast = aggregate_series(
             policy.forecast,
             periods=periods,
             window=window,
             extend_last=True,
         )
-        return ForecastSeriesPolicy(
+        return PercentileForecastOptimizationPolicy(
             forecast=aggregated_forecast,
             lead_time=aggregate_lead_time(lead_time, window),
         )

@@ -37,12 +37,12 @@ print(result.summary)
 ```
 
 ```python
-from replenishment import ForecastBasedPolicy, simulate_replenishment
+from replenishment import PointForecastOptimizationPolicy, simulate_replenishment
 
-policy = ForecastBasedPolicy(
+policy = PointForecastOptimizationPolicy(
     forecast=[18, 20, 22, 21, 19, 17],
-    actual=[16, 19, 24, 20, 18, 15],
-    service_level=0.95,
+    actuals=[16, 19, 24, 20, 18, 15],
+    service_level_factor=0.95,
 )
 result = simulate_replenishment(
     periods=6,
