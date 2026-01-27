@@ -104,11 +104,12 @@ def test_iter_standard_simulation_rows_from_csv(tmp_path):
             "lead_time",
             "initial_on_hand",
             "current_stock",
+            "is_forecast",
             "forecast_p50",
             "forecast_p90",
         ],
         [
-            ["A", "2024-01-01", 10, 12, 11, 0.5, 3.0, 2.0, 1, 5, 8, 11, 14],
+            ["A", "2024-01-01", 10, 12, 11, 0.5, 3.0, 2.0, 1, 5, 8, "true", 11, 14],
         ],
     )
 
@@ -128,6 +129,7 @@ def test_iter_standard_simulation_rows_from_csv(tmp_path):
             initial_on_hand=5,
             current_stock=8,
             forecast_percentiles={"p50": 11, "p90": 14},
+            is_forecast=True,
         )
     ]
 
