@@ -197,6 +197,55 @@ percentile_configs = build_percentile_forecast_candidates(
 percentile_result = optimize_forecast_targets(percentile_configs)
 ```
 
+## Standard simulation input schema
+
+When you want a single file that powers both point-forecast and percentile-forecast
+optimization, use the standard schema below. The CSV is row-based, with one row per
+`unique_id` and date (`ds`). The `ds` column should be ISO-8601 (so lexical sorting
+matches chronological order) and should include historical demand/actuals plus future
+forecast-only rows beyond your backtest cutoff date.
+
+Required columns:
+
+- `unique_id`: Article identifier.
+- `ds`: Date for the period (ISO-8601 recommended).
+- `demand`: Actual demand used in the simulation.
+- `forecast`: Point forecast for the same period.
+- `actuals`: Actuals used to score forecast error for point-forecast optimization.
+- `holding_cost_per_unit`
+- `stockout_cost_per_unit`
+- `order_cost_per_order`
+- `lead_time`
+- `initial_on_hand` (alias: `initial_demand`)
+- `current_stock`: Snapshot of the latest available stock (used for downstream decisioning).
+
+Optional percentile forecast columns:
+
+- Any column named `forecast_<label>` will be treated as a percentile candidate for
+  percentile optimization (for example, `forecast_p50`, `forecast_p90`).
+
+Example usage:
+
+```python
+from replenishment import (
+    build_percentile_forecast_candidates_from_standard_rows,
+    build_point_forecast_article_configs_from_standard_rows,
+    iter_standard_simulation_rows_from_csv,
+    optimize_forecast_targets,
+    optimize_service_level_factors,
+)
+
+rows = list(iter_standard_simulation_rows_from_csv("simulation_inputs.csv"))
+point_configs = build_point_forecast_article_configs_from_standard_rows(
+    rows,
+    service_level_factor=0.9,
+)
+point_result = optimize_service_level_factors(point_configs, candidate_factors=[0.8, 0.9])
+
+percentile_configs = build_percentile_forecast_candidates_from_standard_rows(rows)
+percentile_result = optimize_forecast_targets(percentile_configs)
+```
+
 ## Notebook
 
 See `notebooks/stock_replenishment_example.ipynb` for a runnable example.
