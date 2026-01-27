@@ -142,6 +142,7 @@ def iter_standard_simulation_rows_from_csv(
                 stockout_cost_per_unit_field,
                 order_cost_per_order_field,
                 lead_time_field,
+                current_stock_field,
             ],
             context="standard simulation CSV",
         )

@@ -189,3 +189,29 @@ def test_iter_standard_simulation_rows_warns_on_missing_columns(tmp_path):
     with pytest.warns(UserWarning, match="Missing required columns"):
         with pytest.raises(ValueError, match="missing required columns"):
             list(iter_standard_simulation_rows_from_csv(str(path)))
+
+
+def test_iter_standard_simulation_rows_requires_current_stock(tmp_path):
+    path = tmp_path / "missing_stock.csv"
+    _write_csv(
+        path,
+        [
+            "unique_id",
+            "ds",
+            "demand",
+            "forecast",
+            "actuals",
+            "holding_cost_per_unit",
+            "stockout_cost_per_unit",
+            "order_cost_per_order",
+            "lead_time",
+            "initial_on_hand",
+        ],
+        [
+            ["A", "2024-01-01", 10, 12, 11, 0.5, 3.0, 2.0, 1, 5],
+        ],
+    )
+
+    with pytest.warns(UserWarning, match="current_stock"):
+        with pytest.raises(ValueError, match="current_stock"):
+            list(iter_standard_simulation_rows_from_csv(str(path)))
