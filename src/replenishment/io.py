@@ -14,7 +14,7 @@ import warnings
 
 from .optimization import ForecastCandidatesConfig
 from .policies import PointForecastOptimizationPolicy
-from .simulation import ArticleSimulationConfig
+from .simulation import ArticleSimulationConfig, SimulationResult
 
 
 @dataclass(frozen=True)
@@ -50,6 +50,13 @@ class StandardSimulationRow:
     current_stock: int
     forecast_percentiles: Mapping[str, int]
     is_forecast: bool = False
+
+
+@dataclass(frozen=True)
+class ReplenishmentDecisionRow:
+    unique_id: str
+    ds: str
+    quantity: int
 
 
 def generate_standard_simulation_rows(
@@ -196,6 +203,121 @@ def standard_simulation_rows_to_dataframe(
             ) from exc
         return pl.DataFrame(data)
     raise ValueError("library must be 'pandas' or 'polars'.")
+
+
+def replenishment_decision_rows_to_dicts(
+    rows: Iterable[ReplenishmentDecisionRow],
+) -> list[dict[str, str | int]]:
+    return [
+        {"unique_id": row.unique_id, "ds": row.ds, "quantity": row.quantity}
+        for row in rows
+    ]
+
+
+def replenishment_decision_rows_to_dataframe(
+    rows: Iterable[ReplenishmentDecisionRow],
+    *,
+    library: str = "pandas",
+):
+    data = replenishment_decision_rows_to_dicts(rows)
+    if library == "pandas":
+        try:
+            import pandas as pd  # type: ignore
+        except ModuleNotFoundError as exc:
+            raise ModuleNotFoundError(
+                "pandas is required for replenishment_decision_rows_to_dataframe(library='pandas')."
+            ) from exc
+        return pd.DataFrame(data)
+    if library == "polars":
+        try:
+            import polars as pl  # type: ignore
+        except ModuleNotFoundError as exc:
+            raise ModuleNotFoundError(
+                "polars is required for replenishment_decision_rows_to_dataframe(library='polars')."
+            ) from exc
+        return pl.DataFrame(data)
+    raise ValueError("library must be 'pandas' or 'polars'.")
+
+
+def build_replenishment_decisions_from_simulations(
+    rows,
+    simulations: Mapping[str, SimulationResult],
+    *,
+    aggregation_window: Mapping[str, int] | int = 1,
+) -> list[ReplenishmentDecisionRow]:
+    if hasattr(rows, "to_dicts") or hasattr(rows, "to_dict"):
+        rows = standard_simulation_rows_from_dataframe(rows)
+    grouped = _group_standard_rows(rows)
+    decisions: list[ReplenishmentDecisionRow] = []
+    for unique_id, simulation in simulations.items():
+        if unique_id not in grouped:
+            raise ValueError(f"Missing standard rows for unique_id '{unique_id}'.")
+        ordered = _order_rows_by_ds(unique_id, grouped[unique_id])
+        window = _resolve_value(aggregation_window, unique_id, "aggregation_window")
+        if not isinstance(window, int):
+            raise TypeError("aggregation_window must be an int or mapping of ints.")
+        if window <= 0:
+            raise ValueError("aggregation_window must be positive.")
+        ds_values = [row.ds for row in ordered]
+        max_index = (len(simulation.snapshots) - 1) * window
+        if max_index >= len(ds_values):
+            raise ValueError(
+                f"Aggregation window {window} is incompatible with ds length for unique_id '{unique_id}'."
+            )
+        for index, snapshot in enumerate(simulation.snapshots):
+            ds = ds_values[index * window]
+            decisions.append(
+                ReplenishmentDecisionRow(
+                    unique_id=unique_id,
+                    ds=ds,
+                    quantity=snapshot.order_placed,
+                )
+            )
+    return decisions
+
+
+def build_replenishment_decisions_from_optimization_results(
+    rows,
+    optimization_results: Mapping[str, object],
+    *,
+    aggregation_window: Mapping[str, int] | int = 1,
+) -> list[ReplenishmentDecisionRow]:
+    simulations: dict[str, SimulationResult] = {}
+    windows: dict[str, int] = {}
+    for unique_id, result in optimization_results.items():
+        if not hasattr(result, "simulation"):
+            raise TypeError("Optimization results must include a simulation attribute.")
+        simulation = getattr(result, "simulation")
+        if not isinstance(simulation, SimulationResult):
+            raise TypeError("Optimization results must include a SimulationResult.")
+        simulations[unique_id] = simulation
+        if hasattr(result, "window"):
+            window = getattr(result, "window")
+            if not isinstance(window, int):
+                raise TypeError("Optimization result window must be an int.")
+            windows[unique_id] = window
+
+    window_override = {}
+    if isinstance(aggregation_window, Mapping):
+        window_override = dict(aggregation_window)
+    elif isinstance(aggregation_window, int):
+        window_override = {unique_id: aggregation_window for unique_id in simulations}
+    else:
+        raise TypeError("aggregation_window must be an int or mapping of ints.")
+
+    for unique_id, window in window_override.items():
+        if unique_id in windows and windows[unique_id] != window:
+            raise ValueError(
+                f"Aggregation window mismatch for unique_id '{unique_id}':"
+                f" {windows[unique_id]} vs {window}."
+            )
+        windows.setdefault(unique_id, window)
+
+    return build_replenishment_decisions_from_simulations(
+        rows,
+        simulations,
+        aggregation_window=windows,
+    )
 
 
 def standard_simulation_rows_from_dataframe(
