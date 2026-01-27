@@ -369,6 +369,7 @@ def test_build_replenishment_decisions_from_optimization_results():
             unique_id="A",
             ds=rows[index * window].ds,
             quantity=snapshot.order_placed,
+            aggregation_window=window,
         )
         for index, snapshot in enumerate(simulation.snapshots)
     ]

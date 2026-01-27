@@ -12,7 +12,14 @@ import random
 import string
 import warnings
 
-from .optimization import ForecastCandidatesConfig
+from .optimization import (
+    AggregationForecastTargetOptimizationResult,
+    AggregationServiceLevelOptimizationResult,
+    AggregationWindowOptimizationResult,
+    ForecastCandidatesConfig,
+    PercentileForecastOptimizationResult,
+    PointForecastOptimizationResult,
+)
 from .policies import PointForecastOptimizationPolicy
 from .simulation import ArticleSimulationConfig, SimulationResult
 
@@ -57,6 +64,16 @@ class ReplenishmentDecisionRow:
     unique_id: str
     ds: str
     quantity: int
+    sigma: float | None = None
+    aggregation_window: int | None = None
+    percentile_target: float | str | None = None
+
+
+@dataclass(frozen=True)
+class ReplenishmentDecisionMetadata:
+    sigma: float | None = None
+    aggregation_window: int | None = None
+    percentile_target: float | str | None = None
 
 
 def generate_standard_simulation_rows(
@@ -207,9 +224,16 @@ def standard_simulation_rows_to_dataframe(
 
 def replenishment_decision_rows_to_dicts(
     rows: Iterable[ReplenishmentDecisionRow],
-) -> list[dict[str, str | int]]:
+) -> list[dict[str, str | int | float | None]]:
     return [
-        {"unique_id": row.unique_id, "ds": row.ds, "quantity": row.quantity}
+        {
+            "unique_id": row.unique_id,
+            "ds": row.ds,
+            "quantity": row.quantity,
+            "sigma": row.sigma,
+            "aggregation_window": row.aggregation_window,
+            "percentile_target": row.percentile_target,
+        }
         for row in rows
     ]
 
@@ -244,11 +268,13 @@ def build_replenishment_decisions_from_simulations(
     simulations: Mapping[str, SimulationResult],
     *,
     aggregation_window: Mapping[str, int] | int = 1,
+    decision_metadata: Mapping[str, ReplenishmentDecisionMetadata] | None = None,
 ) -> list[ReplenishmentDecisionRow]:
     if hasattr(rows, "to_dicts") or hasattr(rows, "to_dict"):
         rows = standard_simulation_rows_from_dataframe(rows)
     grouped = _group_standard_rows(rows)
     decisions: list[ReplenishmentDecisionRow] = []
+    metadata_lookup = decision_metadata or {}
     for unique_id, simulation in simulations.items():
         if unique_id not in grouped:
             raise ValueError(f"Missing standard rows for unique_id '{unique_id}'.")
@@ -264,6 +290,7 @@ def build_replenishment_decisions_from_simulations(
             raise ValueError(
                 f"Aggregation window {window} is incompatible with ds length for unique_id '{unique_id}'."
             )
+        metadata = metadata_lookup.get(unique_id, ReplenishmentDecisionMetadata())
         for index, snapshot in enumerate(simulation.snapshots):
             ds = ds_values[index * window]
             decisions.append(
@@ -271,6 +298,9 @@ def build_replenishment_decisions_from_simulations(
                     unique_id=unique_id,
                     ds=ds,
                     quantity=snapshot.order_placed,
+                    sigma=metadata.sigma,
+                    aggregation_window=metadata.aggregation_window,
+                    percentile_target=metadata.percentile_target,
                 )
             )
     return decisions
@@ -284,6 +314,7 @@ def build_replenishment_decisions_from_optimization_results(
 ) -> list[ReplenishmentDecisionRow]:
     simulations: dict[str, SimulationResult] = {}
     windows: dict[str, int] = {}
+    metadata: dict[str, ReplenishmentDecisionMetadata] = {}
     for unique_id, result in optimization_results.items():
         if not hasattr(result, "simulation"):
             raise TypeError("Optimization results must include a simulation attribute.")
@@ -296,6 +327,7 @@ def build_replenishment_decisions_from_optimization_results(
             if not isinstance(window, int):
                 raise TypeError("Optimization result window must be an int.")
             windows[unique_id] = window
+        metadata[unique_id] = _decision_metadata_from_result(result)
 
     window_override: dict[str, int] = {}
     if aggregation_window is None:
@@ -331,7 +363,36 @@ def build_replenishment_decisions_from_optimization_results(
         rows,
         simulations,
         aggregation_window=windows,
+        decision_metadata=metadata,
     )
+
+
+def _decision_metadata_from_result(
+    result: object,
+) -> ReplenishmentDecisionMetadata:
+    if isinstance(result, AggregationServiceLevelOptimizationResult):
+        return ReplenishmentDecisionMetadata(
+            sigma=result.service_level_factor,
+            aggregation_window=result.window,
+        )
+    if isinstance(result, AggregationForecastTargetOptimizationResult):
+        return ReplenishmentDecisionMetadata(
+            aggregation_window=result.window,
+            percentile_target=result.target,
+        )
+    if isinstance(result, AggregationWindowOptimizationResult):
+        return ReplenishmentDecisionMetadata(
+            aggregation_window=result.window,
+        )
+    if isinstance(result, PointForecastOptimizationResult):
+        return ReplenishmentDecisionMetadata(
+            sigma=result.service_level_factor,
+        )
+    if isinstance(result, PercentileForecastOptimizationResult):
+        return ReplenishmentDecisionMetadata(
+            percentile_target=result.target,
+        )
+    return ReplenishmentDecisionMetadata()
 
 
 def standard_simulation_rows_from_dataframe(
