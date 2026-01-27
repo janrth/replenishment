@@ -4,17 +4,22 @@ import pytest
 
 from replenishment import (
     PointForecastRow,
+    ReplenishmentDecisionRow,
     StandardSimulationRow,
     build_percentile_forecast_candidates,
     build_percentile_forecast_candidates_from_standard_rows,
     build_point_forecast_article_configs,
     build_point_forecast_article_configs_from_standard_rows,
+    build_replenishment_decisions_from_optimization_results,
+    build_replenishment_decisions_from_simulations,
     generate_standard_simulation_rows,
     iter_percentile_forecast_rows_from_csv,
     iter_point_forecast_rows_from_csv,
     iter_standard_simulation_rows_from_csv,
+    optimize_aggregation_windows,
     split_standard_simulation_rows,
     standard_simulation_rows_from_dataframe,
+    simulate_replenishment_with_aggregation,
 )
 
 
@@ -193,6 +198,182 @@ def test_generate_standard_simulation_rows_masks_actuals_after_forecast():
     assert rows[0].demand == rows[0].actuals
     assert rows[1].actuals is None
     assert rows[1].demand == rows[1].forecast
+
+
+def test_build_replenishment_decisions_from_simulations():
+    rows = [
+        StandardSimulationRow(
+            unique_id="A",
+            ds="2024-01-01",
+            demand=10,
+            forecast=11,
+            actuals=10,
+            holding_cost_per_unit=0.5,
+            stockout_cost_per_unit=3.0,
+            order_cost_per_order=2.0,
+            lead_time=1,
+            initial_on_hand=8,
+            current_stock=8,
+            forecast_percentiles={},
+        ),
+        StandardSimulationRow(
+            unique_id="A",
+            ds="2024-01-02",
+            demand=9,
+            forecast=10,
+            actuals=9,
+            holding_cost_per_unit=0.5,
+            stockout_cost_per_unit=3.0,
+            order_cost_per_order=2.0,
+            lead_time=1,
+            initial_on_hand=8,
+            current_stock=8,
+            forecast_percentiles={},
+        ),
+        StandardSimulationRow(
+            unique_id="A",
+            ds="2024-01-03",
+            demand=8,
+            forecast=9,
+            actuals=8,
+            holding_cost_per_unit=0.5,
+            stockout_cost_per_unit=3.0,
+            order_cost_per_order=2.0,
+            lead_time=1,
+            initial_on_hand=8,
+            current_stock=8,
+            forecast_percentiles={},
+        ),
+        StandardSimulationRow(
+            unique_id="A",
+            ds="2024-01-04",
+            demand=7,
+            forecast=8,
+            actuals=7,
+            holding_cost_per_unit=0.5,
+            stockout_cost_per_unit=3.0,
+            order_cost_per_order=2.0,
+            lead_time=1,
+            initial_on_hand=8,
+            current_stock=8,
+            forecast_percentiles={},
+        ),
+    ]
+
+    configs = build_point_forecast_article_configs_from_standard_rows(
+        rows,
+        service_level_factor=0.9,
+    )
+    config = configs["A"]
+    simulation = simulate_replenishment_with_aggregation(
+        periods=config.periods,
+        demand=config.demand,
+        initial_on_hand=config.initial_on_hand,
+        lead_time=config.lead_time,
+        policy=config.policy,
+        aggregation_window=2,
+        holding_cost_per_unit=config.holding_cost_per_unit,
+        stockout_cost_per_unit=config.stockout_cost_per_unit,
+        order_cost_per_order=config.order_cost_per_order,
+        order_cost_per_unit=config.order_cost_per_unit,
+    )
+    simulations = {"A": simulation}
+
+    decisions = build_replenishment_decisions_from_simulations(
+        rows,
+        simulations,
+        aggregation_window=2,
+    )
+
+    snapshots = simulation.snapshots
+    expected = [
+        ReplenishmentDecisionRow(
+            unique_id="A",
+            ds="2024-01-01",
+            quantity=snapshots[0].order_placed,
+        ),
+        ReplenishmentDecisionRow(
+            unique_id="A",
+            ds="2024-01-03",
+            quantity=snapshots[1].order_placed,
+        ),
+    ]
+
+    assert decisions == expected
+
+
+def test_build_replenishment_decisions_from_optimization_results():
+    rows = [
+        StandardSimulationRow(
+            unique_id="A",
+            ds="2024-01-01",
+            demand=10,
+            forecast=11,
+            actuals=10,
+            holding_cost_per_unit=0.5,
+            stockout_cost_per_unit=3.0,
+            order_cost_per_order=2.0,
+            lead_time=1,
+            initial_on_hand=8,
+            current_stock=8,
+            forecast_percentiles={},
+        ),
+        StandardSimulationRow(
+            unique_id="A",
+            ds="2024-01-02",
+            demand=9,
+            forecast=10,
+            actuals=9,
+            holding_cost_per_unit=0.5,
+            stockout_cost_per_unit=3.0,
+            order_cost_per_order=2.0,
+            lead_time=1,
+            initial_on_hand=8,
+            current_stock=8,
+            forecast_percentiles={},
+        ),
+        StandardSimulationRow(
+            unique_id="A",
+            ds="2024-01-03",
+            demand=8,
+            forecast=9,
+            actuals=8,
+            holding_cost_per_unit=0.5,
+            stockout_cost_per_unit=3.0,
+            order_cost_per_order=2.0,
+            lead_time=1,
+            initial_on_hand=8,
+            current_stock=8,
+            forecast_percentiles={},
+        ),
+    ]
+
+    configs = build_point_forecast_article_configs_from_standard_rows(
+        rows,
+        service_level_factor=0.9,
+    )
+    optimization_results = optimize_aggregation_windows(
+        configs,
+        candidate_windows=[1, 2],
+    )
+
+    decisions = build_replenishment_decisions_from_optimization_results(
+        rows,
+        optimization_results,
+    )
+
+    simulation = optimization_results["A"].simulation
+    window = optimization_results["A"].window
+    expected = [
+        ReplenishmentDecisionRow(
+            unique_id="A",
+            ds=rows[index * window].ds,
+            quantity=snapshot.order_placed,
+        )
+        for index, snapshot in enumerate(simulation.snapshots)
+    ]
+
+    assert decisions == expected
 
 
 def test_standard_simulation_rows_from_dataframe_history_and_cutoff():
