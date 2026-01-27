@@ -209,7 +209,9 @@ Required columns:
 
 - `unique_id`: Article identifier.
 - `ds`: Date for the period (ISO-8601 recommended).
-- `demand`: Actual demand used in the simulation.
+- `demand`: Actual demand used in the simulation. Required for CSV inputs; for DataFrame
+  inputs it can be omitted and will be derived from actuals (backtest) or forecast
+  (future) values.
 - `forecast`: Point forecast for the same period.
 - `actuals`: Actuals used to score forecast error for point-forecast optimization.
 - `holding_cost_per_unit`
@@ -252,7 +254,8 @@ rows = generate_standard_simulation_rows(
     forecast_std=3,
     seed=42,
 )
-# Convert to a DataFrame for inspection (pandas or polars).
+# Convert to a DataFrame for inspection (pandas or polars). To include the demand
+# column, pass include_demand=True.
 df = standard_simulation_rows_to_dataframe(rows, library="pandas")
 # Or start from a pandas/polars DataFrame that has history + forecast columns.
 # When actuals/history are missing after the cutoff, they can be NaN.
@@ -265,6 +268,8 @@ point_configs = build_point_forecast_article_configs_from_standard_rows(
     service_level_factor=0.9,
 )
 point_result = optimize_service_level_factors(point_configs, candidate_factors=[0.8, 0.9])
+
+# split_standard_simulation_rows also accepts a pandas/polars DataFrame directly.
 
 percentile_configs = build_percentile_forecast_candidates_from_standard_rows(backtest_rows)
 percentile_result = optimize_forecast_targets(percentile_configs)

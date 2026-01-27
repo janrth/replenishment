@@ -112,9 +112,9 @@ def generate_standard_simulation_rows(
                 forecast_start_period is not None and period >= forecast_start_period
             )
             ds = (base_date + timedelta(days=period * frequency_days)).isoformat()
-            demand = sample_int(history_mean, history_std)
-            actuals = sample_int(history_mean, history_std)
             forecast = sample_int(forecast_mean, forecast_std)
+            actuals = None if is_forecast else sample_int(history_mean, history_std)
+            demand = forecast if is_forecast else int(actuals)
             forecast_percentiles = {
                 label: max(0, int(round(forecast * multiplier)))
                 for label, multiplier in percentile_multipliers.items()
@@ -172,9 +172,13 @@ def standard_simulation_rows_to_dataframe(
     *,
     library: str = "pandas",
     forecast_prefix: str = "forecast_",
+    include_demand: bool = False,
 ):
     """Convert standard rows into a pandas or polars DataFrame."""
     data = standard_simulation_rows_to_dicts(rows, forecast_prefix=forecast_prefix)
+    if not include_demand:
+        for entry in data:
+            entry.pop("demand", None)
     if library == "pandas":
         try:
             import pandas as pd  # type: ignore
@@ -239,9 +243,9 @@ def standard_simulation_rows_from_dataframe(
         require_any_of=[initial_on_hand_field, initial_demand_field],
         context="standard simulation DataFrame",
     )
-    if not has_demand and not has_history:
+    if not has_demand and not has_history and not has_actuals:
         raise ValueError(
-            "DataFrame must include demand or history columns to build simulation rows."
+            "DataFrame must include demand, history, or actuals columns to build simulation rows."
         )
     if not has_actuals and not has_history:
         raise ValueError(
@@ -277,6 +281,8 @@ def standard_simulation_rows_from_dataframe(
             cutoff=cutoff,
         )
         demand_value = _coalesce_value(row, demand_field, history_field)
+        if demand_value is None:
+            demand_value = _coalesce_value(row, actuals_field)
         if demand_value is None:
             demand_value = _coalesce_value(row, forecast_field)
         if demand_value is None:
@@ -691,9 +697,12 @@ def build_percentile_forecast_candidates_from_standard_rows(
 
 
 def split_standard_simulation_rows(
-    rows: Iterable[StandardSimulationRow],
+    rows,
+    cutoff: int | str | date | datetime | None = None,
 ) -> tuple[list[StandardSimulationRow], list[StandardSimulationRow]]:
     """Split standard rows into backtest and forecast partitions."""
+    if hasattr(rows, "to_dicts") or hasattr(rows, "to_dict"):
+        rows = standard_simulation_rows_from_dataframe(rows, cutoff=cutoff)
     backtest_rows: list[StandardSimulationRow] = []
     forecast_rows: list[StandardSimulationRow] = []
     for row in rows:

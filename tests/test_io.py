@@ -9,9 +9,11 @@ from replenishment import (
     build_percentile_forecast_candidates_from_standard_rows,
     build_point_forecast_article_configs,
     build_point_forecast_article_configs_from_standard_rows,
+    generate_standard_simulation_rows,
     iter_percentile_forecast_rows_from_csv,
     iter_point_forecast_rows_from_csv,
     iter_standard_simulation_rows_from_csv,
+    split_standard_simulation_rows,
     standard_simulation_rows_from_dataframe,
 )
 
@@ -179,6 +181,20 @@ def test_build_configs_from_standard_rows():
     assert set(percentile_configs["A"].forecast_candidates.keys()) == {"p50", "p90"}
 
 
+def test_generate_standard_simulation_rows_masks_actuals_after_forecast():
+    rows = generate_standard_simulation_rows(
+        n_unique_ids=1,
+        periods=2,
+        forecast_start_period=1,
+        seed=1,
+    )
+
+    assert rows[0].actuals is not None
+    assert rows[0].demand == rows[0].actuals
+    assert rows[1].actuals is None
+    assert rows[1].demand == rows[1].forecast
+
+
 def test_standard_simulation_rows_from_dataframe_history_and_cutoff():
     class FakeDataFrame:
         def __init__(self, records):
@@ -226,6 +242,96 @@ def test_standard_simulation_rows_from_dataframe_history_and_cutoff():
     assert rows[0].is_forecast is False
     assert rows[1].actuals is None
     assert rows[1].is_forecast is True
+
+
+def test_standard_simulation_rows_from_dataframe_with_actuals_only():
+    class FakeDataFrame:
+        def __init__(self, records):
+            self._records = records
+
+        def to_dict(self, orient="records"):
+            assert orient == "records"
+            return self._records
+
+    records = [
+        {
+            "unique_id": "A",
+            "ds": "2024-01-01",
+            "forecast": 12,
+            "actuals": 10,
+            "holding_cost_per_unit": 0.5,
+            "stockout_cost_per_unit": 3.0,
+            "order_cost_per_order": 2.0,
+            "lead_time": 1,
+            "initial_on_hand": 5,
+            "current_stock": 8,
+        },
+        {
+            "unique_id": "A",
+            "ds": "2024-02-01",
+            "forecast": 13,
+            "actuals": float("nan"),
+            "holding_cost_per_unit": 0.5,
+            "stockout_cost_per_unit": 3.0,
+            "order_cost_per_order": 2.0,
+            "lead_time": 1,
+            "initial_on_hand": 5,
+            "current_stock": 8,
+        },
+    ]
+
+    rows = standard_simulation_rows_from_dataframe(FakeDataFrame(records))
+
+    assert rows[0].demand == 10
+    assert rows[0].actuals == 10
+    assert rows[0].is_forecast is False
+    assert rows[1].demand == 13
+    assert rows[1].actuals is None
+    assert rows[1].is_forecast is True
+
+
+def test_split_standard_simulation_rows_accepts_dataframe():
+    class FakeDataFrame:
+        def __init__(self, records):
+            self._records = records
+
+        def to_dict(self, orient="records"):
+            assert orient == "records"
+            return self._records
+
+    records = [
+        {
+            "unique_id": "A",
+            "ds": "2024-01-01",
+            "forecast": 12,
+            "actuals": 10,
+            "holding_cost_per_unit": 0.5,
+            "stockout_cost_per_unit": 3.0,
+            "order_cost_per_order": 2.0,
+            "lead_time": 1,
+            "initial_on_hand": 5,
+            "current_stock": 8,
+        },
+        {
+            "unique_id": "A",
+            "ds": "2024-02-01",
+            "forecast": 13,
+            "actuals": float("nan"),
+            "holding_cost_per_unit": 0.5,
+            "stockout_cost_per_unit": 3.0,
+            "order_cost_per_order": 2.0,
+            "lead_time": 1,
+            "initial_on_hand": 5,
+            "current_stock": 8,
+        },
+    ]
+
+    backtest_rows, forecast_rows = split_standard_simulation_rows(
+        FakeDataFrame(records)
+    )
+
+    assert [row.ds for row in backtest_rows] == ["2024-01-01"]
+    assert [row.ds for row in forecast_rows] == ["2024-02-01"]
 
 
 def test_iter_standard_simulation_rows_warns_on_missing_columns(tmp_path):
