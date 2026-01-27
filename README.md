@@ -89,6 +89,10 @@ from replenishment import (
     ArticleSimulationConfig,
     ForecastCandidatesConfig,
     PointForecastOptimizationPolicy,
+    build_percentile_forecast_candidates,
+    build_point_forecast_article_configs,
+    iter_percentile_forecast_rows_from_csv,
+    iter_point_forecast_rows_from_csv,
     optimize_aggregation_and_forecast_targets,
     optimize_aggregation_and_service_level_factors,
     optimize_aggregation_windows,
@@ -162,6 +166,35 @@ aggregated = simulate_replenishment_with_aggregation(
     aggregation_window=hard_coded_window,
     order_cost_per_order=service_level_config["A"].order_cost_per_order,
 )
+
+# Example: Loading many articles from CSVs.
+# point_forecast.csv columns:
+# unique_id,period,demand,forecast,actual
+point_rows = iter_point_forecast_rows_from_csv("point_forecast.csv")
+point_configs = build_point_forecast_article_configs(
+    point_rows,
+    lead_time=2,
+    initial_on_hand=20,
+    service_level_factor=0.9,
+    holding_cost_per_unit=0.5,
+    stockout_cost_per_unit=3.0,
+)
+service_level_result = optimize_service_level_factors(
+    point_configs,
+    candidate_factors=[0.8, 0.9, 1.0],
+)
+
+# percentile_forecast.csv columns:
+# unique_id,period,demand,target,forecast
+percentile_rows = iter_percentile_forecast_rows_from_csv("percentile_forecast.csv")
+percentile_configs = build_percentile_forecast_candidates(
+    percentile_rows,
+    lead_time=2,
+    initial_on_hand=20,
+    holding_cost_per_unit=0.5,
+    stockout_cost_per_unit=3.0,
+)
+percentile_result = optimize_forecast_targets(percentile_configs)
 ```
 
 ## Notebook
