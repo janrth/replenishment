@@ -12,6 +12,7 @@ from replenishment import (
     iter_percentile_forecast_rows_from_csv,
     iter_point_forecast_rows_from_csv,
     iter_standard_simulation_rows_from_csv,
+    standard_simulation_rows_from_dataframe,
 )
 
 
@@ -176,6 +177,55 @@ def test_build_configs_from_standard_rows():
     assert point_configs["A"].periods == 2
     assert point_configs["A"].initial_on_hand == 5
     assert set(percentile_configs["A"].forecast_candidates.keys()) == {"p50", "p90"}
+
+
+def test_standard_simulation_rows_from_dataframe_history_and_cutoff():
+    class FakeDataFrame:
+        def __init__(self, records):
+            self._records = records
+
+        def to_dict(self, orient="records"):
+            assert orient == "records"
+            return self._records
+
+    records = [
+        {
+            "unique_id": "A",
+            "ds": "2024-01-01",
+            "history": 10,
+            "forecast": 12,
+            "holding_cost_per_unit": 0.5,
+            "stockout_cost_per_unit": 3.0,
+            "order_cost_per_order": 2.0,
+            "lead_time": 1,
+            "initial_on_hand": 5,
+            "current_stock": 8,
+            "forecast_p50": 11,
+        },
+        {
+            "unique_id": "A",
+            "ds": "2024-02-01",
+            "history": float("nan"),
+            "forecast": 13,
+            "holding_cost_per_unit": 0.5,
+            "stockout_cost_per_unit": 3.0,
+            "order_cost_per_order": 2.0,
+            "lead_time": 1,
+            "initial_on_hand": 5,
+            "current_stock": 8,
+            "forecast_p50": 12,
+        },
+    ]
+
+    rows = standard_simulation_rows_from_dataframe(
+        FakeDataFrame(records),
+        cutoff="2024-01-01",
+    )
+
+    assert rows[0].actuals == 10
+    assert rows[0].is_forecast is False
+    assert rows[1].actuals is None
+    assert rows[1].is_forecast is True
 
 
 def test_iter_standard_simulation_rows_warns_on_missing_columns(tmp_path):

@@ -7,6 +7,7 @@ from collections.abc import Iterable, Iterator, Mapping
 import csv
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+import math
 import random
 import string
 import warnings
@@ -40,7 +41,7 @@ class StandardSimulationRow:
     ds: str
     demand: int
     forecast: int
-    actuals: int
+    actuals: int | float | None
     holding_cost_per_unit: float
     stockout_cost_per_unit: float
     order_cost_per_order: float
@@ -146,7 +147,7 @@ def standard_simulation_rows_to_dicts(
     """Convert standard rows into dictionaries suitable for DataFrame or CSV use."""
     serialized: list[dict[str, str | int | float]] = []
     for row in rows:
-        entry: dict[str, str | int | float | bool] = {
+        entry: dict[str, str | int | float | bool | None] = {
             "unique_id": row.unique_id,
             "ds": row.ds,
             "demand": row.demand,
@@ -193,6 +194,116 @@ def standard_simulation_rows_to_dataframe(
     raise ValueError("library must be 'pandas' or 'polars'.")
 
 
+def standard_simulation_rows_from_dataframe(
+    df,
+    *,
+    unique_id_field: str = "unique_id",
+    ds_field: str = "ds",
+    demand_field: str = "demand",
+    history_field: str = "history",
+    forecast_field: str = "forecast",
+    actuals_field: str = "actuals",
+    holding_cost_per_unit_field: str = "holding_cost_per_unit",
+    stockout_cost_per_unit_field: str = "stockout_cost_per_unit",
+    order_cost_per_order_field: str = "order_cost_per_order",
+    lead_time_field: str = "lead_time",
+    initial_on_hand_field: str = "initial_on_hand",
+    initial_demand_field: str = "initial_demand",
+    current_stock_field: str = "current_stock",
+    is_forecast_field: str = "is_forecast",
+    period_field: str = "period",
+    cutoff: int | str | date | datetime | None = None,
+    forecast_prefix: str = "forecast_",
+) -> list[StandardSimulationRow]:
+    """Convert a pandas or polars DataFrame into standard simulation rows."""
+    rows = _rows_from_dataframe(df)
+    if not rows:
+        return []
+    fieldnames = list(rows[0].keys())
+    has_demand = demand_field in fieldnames
+    has_history = history_field in fieldnames
+    has_actuals = actuals_field in fieldnames
+    required = [
+        unique_id_field,
+        ds_field,
+        forecast_field,
+        holding_cost_per_unit_field,
+        stockout_cost_per_unit_field,
+        order_cost_per_order_field,
+        lead_time_field,
+        current_stock_field,
+    ]
+    _validate_required_columns(
+        fieldnames,
+        required_fields=required,
+        require_any_of=[initial_on_hand_field, initial_demand_field],
+        context="standard simulation DataFrame",
+    )
+    if not has_demand and not has_history:
+        raise ValueError(
+            "DataFrame must include demand or history columns to build simulation rows."
+        )
+    if not has_actuals and not has_history:
+        raise ValueError(
+            "DataFrame must include actuals or history columns to build simulation rows."
+        )
+
+    parsed_rows: list[StandardSimulationRow] = []
+    for row in rows:
+        forecast_percentiles = {
+            key[len(forecast_prefix) :]: int(value)
+            for key, value in row.items()
+            if key.startswith(forecast_prefix)
+            and key != forecast_field
+            and not _is_missing(value)
+        }
+        initial_on_hand = _coalesce_value(
+            row, initial_on_hand_field, initial_demand_field
+        )
+        if initial_on_hand is None:
+            raise ValueError(
+                "Initial on-hand inventory is required (initial_on_hand or initial_demand)."
+            )
+        current_stock_value = _coalesce_value(row, current_stock_field)
+        if current_stock_value is None:
+            current_stock_value = initial_on_hand
+        is_forecast_value = _derive_is_forecast(
+            row,
+            ds_field=ds_field,
+            is_forecast_field=is_forecast_field,
+            period_field=period_field,
+            actuals_field=actuals_field,
+            history_field=history_field,
+            cutoff=cutoff,
+        )
+        demand_value = _coalesce_value(row, demand_field, history_field)
+        if demand_value is None:
+            demand_value = _coalesce_value(row, forecast_field)
+        if demand_value is None:
+            raise ValueError("Demand values are required for all periods.")
+        actuals_value = _coalesce_value(row, actuals_field, history_field)
+        if actuals_value is None and not is_forecast_value:
+            raise ValueError("Actuals values are required for backtest periods.")
+        parsed_rows.append(
+            StandardSimulationRow(
+                unique_id=str(row[unique_id_field]),
+                ds=_normalize_ds(row[ds_field]),
+                demand=int(demand_value),
+                forecast=int(row[forecast_field]),
+                actuals=actuals_value,
+                holding_cost_per_unit=float(row[holding_cost_per_unit_field]),
+                stockout_cost_per_unit=float(row[stockout_cost_per_unit_field]),
+                order_cost_per_order=float(row[order_cost_per_order_field]),
+                lead_time=int(row[lead_time_field]),
+                initial_on_hand=int(initial_on_hand),
+                current_stock=int(current_stock_value),
+                forecast_percentiles=forecast_percentiles,
+                is_forecast=is_forecast_value,
+            )
+        )
+    return parsed_rows
+
+
 def write_standard_simulation_rows_to_csv(
     path: str,
     rows: Iterable[StandardSimulationRow],
@@ -226,6 +337,8 @@ def write_standard_simulation_rows_to_csv(
         for entry in standard_simulation_rows_to_dicts(
             rows_list, forecast_prefix=forecast_prefix
         ):
+            if _is_missing(entry.get("actuals")):
+                entry["actuals"] = ""
             writer.writerow(entry)
 
 
@@ -363,12 +476,15 @@ def iter_standard_simulation_rows_from_csv(
                 is_forecast_value = _parse_bool(
                     row[is_forecast_field], field=is_forecast_field
                 )
+            actuals_value = _parse_optional_int(row.get(actuals_field, ""))
+            if actuals_value is None and not is_forecast_value:
+                raise ValueError("Actuals values are required for backtest periods.")
             yield StandardSimulationRow(
                 unique_id=row[unique_id_field],
                 ds=row[ds_field],
                 demand=int(row[demand_field]),
                 forecast=int(row[forecast_field]),
-                actuals=int(row[actuals_field]),
+                actuals=actuals_value,
                 holding_cost_per_unit=float(row[holding_cost_per_unit_field]),
                 stockout_cost_per_unit=float(row[stockout_cost_per_unit_field]),
                 order_cost_per_order=float(row[order_cost_per_order_field]),
@@ -521,7 +637,7 @@ def build_point_forecast_article_configs_from_standard_rows(
         order_cost = _ensure_constant(unique_id, ordered, "order_cost_per_order")
         demand = [row.demand for row in ordered]
         forecast = [row.forecast for row in ordered]
-        actuals = [row.actuals for row in ordered]
+        actuals = _trim_actuals_series(unique_id, ordered)
         policy = PointForecastOptimizationPolicy(
             forecast=forecast,
             actuals=actuals,
@@ -616,6 +732,13 @@ def _coalesce_row_value(row: Mapping[str, str], *fields: str) -> int | None:
     for field in fields:
         if field in row and row[field] != "":
             return int(row[field])
+    return None
+
+
+def _coalesce_value(row: Mapping[str, object], *fields: str) -> int | float | None:
+    for field in fields:
+        if field in row and not _is_missing(row[field]):
+            return row[field]  # type: ignore[return-value]
     return None
 
 
@@ -728,3 +851,96 @@ def _parse_bool(value: str, *, field: str) -> bool:
     if normalized in {"0", "false", "no", "n", "f"}:
         return False
     raise ValueError(f"Invalid boolean value for {field}: {value!r}.")
+
+
+def _parse_optional_int(value: str) -> int | None:
+    if value == "":
+        return None
+    return int(value)
+
+
+def _is_missing(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, float):
+        return math.isnan(value)
+    return False
+
+
+def _rows_from_dataframe(df) -> list[dict[str, object]]:
+    if hasattr(df, "to_dicts"):
+        return df.to_dicts()  # type: ignore[no-any-return]
+    if hasattr(df, "to_dict"):
+        return df.to_dict(orient="records")  # type: ignore[no-any-return]
+    raise TypeError("df must be a pandas or polars DataFrame.")
+
+
+def _normalize_ds(value: object) -> str:
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    return str(value)
+
+
+def _derive_is_forecast(
+    row: Mapping[str, object],
+    *,
+    ds_field: str,
+    is_forecast_field: str,
+    period_field: str,
+    actuals_field: str,
+    history_field: str,
+    cutoff: int | str | date | datetime | None,
+) -> bool:
+    if is_forecast_field in row and not _is_missing(row[is_forecast_field]):
+        value = row[is_forecast_field]
+        if isinstance(value, bool):
+            return value
+        return _parse_bool(str(value), field=is_forecast_field)
+    if cutoff is None:
+        return _is_missing(row.get(actuals_field)) and _is_missing(row.get(history_field))
+    if isinstance(cutoff, int):
+        if period_field not in row or _is_missing(row[period_field]):
+            raise ValueError(
+                "period field is required when using an integer cutoff for DataFrame inputs."
+            )
+        return int(row[period_field]) > cutoff
+    ds_value = row.get(ds_field)
+    if ds_value is None:
+        return False
+    if isinstance(ds_value, (date, datetime)):
+        cutoff_value = cutoff
+        if isinstance(cutoff, str):
+            cutoff_value = _try_parse_date(cutoff)
+        if isinstance(cutoff_value, datetime):
+            cutoff_value = cutoff_value.date()
+        if isinstance(cutoff_value, date):
+            if isinstance(ds_value, datetime):
+                ds_value = ds_value.date()
+            return ds_value > cutoff_value
+        return str(ds_value) > str(cutoff)
+    return str(ds_value) > str(cutoff)
+
+
+def _try_parse_date(value: str) -> date | None:
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _trim_actuals_series(
+    unique_id: str, rows: Iterable[StandardSimulationRow]
+) -> list[int]:
+    trimmed: list[int] = []
+    seen_missing = False
+    for row in rows:
+        actuals_value = row.actuals
+        if _is_missing(actuals_value):
+            seen_missing = True
+            continue
+        if seen_missing:
+            raise ValueError(
+                f"Actuals must be present for all backtest periods for unique_id '{unique_id}'."
+            )
+        trimmed.append(int(actuals_value))
+    return trimmed
