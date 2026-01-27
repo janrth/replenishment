@@ -230,12 +230,23 @@ Example usage:
 from replenishment import (
     build_percentile_forecast_candidates_from_standard_rows,
     build_point_forecast_article_configs_from_standard_rows,
+    generate_standard_simulation_rows,
     iter_standard_simulation_rows_from_csv,
     optimize_forecast_targets,
     optimize_service_level_factors,
 )
 
-rows = list(iter_standard_simulation_rows_from_csv("simulation_inputs.csv"))
+rows = generate_standard_simulation_rows(
+    n_unique_ids=2,
+    periods=6,
+    history_mean=18,
+    history_std=4,
+    forecast_mean=20,
+    forecast_std=3,
+    seed=42,
+)
+# Or load the same schema from CSV:
+# rows = list(iter_standard_simulation_rows_from_csv("simulation_inputs.csv"))
 point_configs = build_point_forecast_article_configs_from_standard_rows(
     rows,
     service_level_factor=0.9,
@@ -249,3 +260,5 @@ percentile_result = optimize_forecast_targets(percentile_configs)
 ## Notebook
 
 See `notebooks/stock_replenishment_example.ipynb` for a runnable example.
+For generated input data feeding the simulation and optimizers, use
+`notebooks/generated_data_example.ipynb`.

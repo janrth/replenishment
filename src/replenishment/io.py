@@ -6,6 +6,9 @@ from collections import defaultdict
 from collections.abc import Iterable, Iterator, Mapping
 import csv
 from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+import random
+import string
 import warnings
 
 from .optimization import ForecastCandidatesConfig
@@ -45,6 +48,148 @@ class StandardSimulationRow:
     initial_on_hand: int
     current_stock: int
     forecast_percentiles: Mapping[str, int]
+
+
+def generate_standard_simulation_rows(
+    *,
+    n_unique_ids: int,
+    periods: int,
+    start_date: str | date | datetime = "2024-01-01",
+    frequency_days: int = 30,
+    history_mean: float = 20.0,
+    history_std: float = 5.0,
+    forecast_mean: float = 20.0,
+    forecast_std: float = 4.0,
+    percentile_multipliers: Mapping[str, float] | None = None,
+    holding_cost_per_unit: float = 0.5,
+    stockout_cost_per_unit: float = 3.0,
+    order_cost_per_order: float = 12.5,
+    lead_time: int = 1,
+    initial_on_hand: int = 30,
+    current_stock: int | None = None,
+    seed: int | None = None,
+) -> list[StandardSimulationRow]:
+    """Generate synthetic rows that match the standard simulation schema."""
+    if n_unique_ids <= 0:
+        raise ValueError("n_unique_ids must be positive.")
+    if periods <= 0:
+        raise ValueError("periods must be positive.")
+    if frequency_days <= 0:
+        raise ValueError("frequency_days must be positive.")
+
+    if isinstance(start_date, str):
+        base_date = date.fromisoformat(start_date)
+    elif isinstance(start_date, datetime):
+        base_date = start_date.date()
+    else:
+        base_date = start_date
+
+    rng = random.Random(seed)
+
+    def sample_int(mean: float, std: float) -> int:
+        value = rng.gauss(mean, std)
+        return max(0, int(round(value)))
+
+    if percentile_multipliers is None:
+        percentile_multipliers = {"p50": 1.0, "p90": 1.25}
+
+    unique_ids: list[str] = []
+    for index in range(n_unique_ids):
+        if index < len(string.ascii_uppercase):
+            unique_ids.append(string.ascii_uppercase[index])
+        else:
+            unique_ids.append(f"SKU-{index + 1:03d}")
+
+    rows: list[StandardSimulationRow] = []
+    for unique_id in unique_ids:
+        for period in range(periods):
+            ds = (base_date + timedelta(days=period * frequency_days)).isoformat()
+            demand = sample_int(history_mean, history_std)
+            actuals = sample_int(history_mean, history_std)
+            forecast = sample_int(forecast_mean, forecast_std)
+            forecast_percentiles = {
+                label: max(0, int(round(forecast * multiplier)))
+                for label, multiplier in percentile_multipliers.items()
+            }
+            rows.append(
+                StandardSimulationRow(
+                    unique_id=unique_id,
+                    ds=ds,
+                    demand=demand,
+                    forecast=forecast,
+                    actuals=actuals,
+                    holding_cost_per_unit=holding_cost_per_unit,
+                    stockout_cost_per_unit=stockout_cost_per_unit,
+                    order_cost_per_order=order_cost_per_order,
+                    lead_time=lead_time,
+                    initial_on_hand=initial_on_hand,
+                    current_stock=initial_on_hand if current_stock is None else current_stock,
+                    forecast_percentiles=forecast_percentiles,
+                )
+            )
+    return rows
+
+
+def standard_simulation_rows_to_dicts(
+    rows: Iterable[StandardSimulationRow],
+    *,
+    forecast_prefix: str = "forecast_",
+) -> list[dict[str, str | int | float]]:
+    """Convert standard rows into dictionaries suitable for DataFrame or CSV use."""
+    serialized: list[dict[str, str | int | float]] = []
+    for row in rows:
+        entry: dict[str, str | int | float] = {
+            "unique_id": row.unique_id,
+            "ds": row.ds,
+            "demand": row.demand,
+            "forecast": row.forecast,
+            "actuals": row.actuals,
+            "holding_cost_per_unit": row.holding_cost_per_unit,
+            "stockout_cost_per_unit": row.stockout_cost_per_unit,
+            "order_cost_per_order": row.order_cost_per_order,
+            "lead_time": row.lead_time,
+            "initial_on_hand": row.initial_on_hand,
+            "current_stock": row.current_stock,
+        }
+        for label, value in row.forecast_percentiles.items():
+            entry[f"{forecast_prefix}{label}"] = value
+        serialized.append(entry)
+    return serialized
+
+
+def write_standard_simulation_rows_to_csv(
+    path: str,
+    rows: Iterable[StandardSimulationRow],
+    *,
+    forecast_prefix: str = "forecast_",
+) -> None:
+    """Write standard simulation rows to a CSV that matches the README schema."""
+    rows_list = list(rows)
+    percentile_labels: list[str] = []
+    for row in rows_list:
+        for label in row.forecast_percentiles:
+            if label not in percentile_labels:
+                percentile_labels.append(label)
+    fieldnames = [
+        "unique_id",
+        "ds",
+        "demand",
+        "forecast",
+        "actuals",
+        "holding_cost_per_unit",
+        "stockout_cost_per_unit",
+        "order_cost_per_order",
+        "lead_time",
+        "initial_on_hand",
+        "current_stock",
+    ] + [f"{forecast_prefix}{label}" for label in percentile_labels]
+    with open(path, "w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for entry in standard_simulation_rows_to_dicts(
+            rows_list, forecast_prefix=forecast_prefix
+        ):
+            writer.writerow(entry)
 
 
 def iter_point_forecast_rows_from_csv(
