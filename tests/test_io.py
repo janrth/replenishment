@@ -19,8 +19,10 @@ from replenishment import (
     optimize_aggregation_windows,
     split_standard_simulation_rows,
     standard_simulation_rows_from_dataframe,
+    simulate_replenishment_for_articles,
     simulate_replenishment_with_aggregation,
 )
+from replenishment.io import ReplenishmentDecisionMetadata
 
 
 def _write_csv(path, header, rows):
@@ -291,11 +293,13 @@ def test_build_replenishment_decisions_from_simulations():
             unique_id="A",
             ds="2024-01-01",
             quantity=snapshots[0].order_placed,
+            aggregation_window=2,
         ),
         ReplenishmentDecisionRow(
             unique_id="A",
             ds="2024-01-03",
             quantity=snapshots[1].order_placed,
+            aggregation_window=2,
         ),
     ]
 
@@ -375,6 +379,138 @@ def test_build_replenishment_decisions_from_optimization_results():
     ]
 
     assert decisions == expected
+
+
+def test_build_replenishment_decisions_from_simulations_with_metadata_inputs():
+    rows = [
+        StandardSimulationRow(
+            unique_id="A",
+            ds="2024-01-01",
+            demand=10,
+            forecast=11,
+            actuals=10,
+            holding_cost_per_unit=0.5,
+            stockout_cost_per_unit=3.0,
+            order_cost_per_order=2.0,
+            lead_time=1,
+            initial_on_hand=8,
+            current_stock=8,
+            forecast_percentiles={},
+        ),
+        StandardSimulationRow(
+            unique_id="A",
+            ds="2024-01-02",
+            demand=9,
+            forecast=10,
+            actuals=9,
+            holding_cost_per_unit=0.5,
+            stockout_cost_per_unit=3.0,
+            order_cost_per_order=2.0,
+            lead_time=1,
+            initial_on_hand=8,
+            current_stock=8,
+            forecast_percentiles={},
+        ),
+    ]
+
+    configs = build_point_forecast_article_configs_from_standard_rows(
+        rows,
+        service_level_factor=0.9,
+    )
+    simulations = simulate_replenishment_for_articles(configs)
+
+    decisions = build_replenishment_decisions_from_simulations(
+        rows,
+        simulations,
+        sigma=1.25,
+        percentile_target="p90",
+    )
+
+    assert decisions == [
+        ReplenishmentDecisionRow(
+            unique_id="A",
+            ds="2024-01-01",
+            quantity=simulations["A"].snapshots[0].order_placed,
+            sigma=1.25,
+            aggregation_window=1,
+            percentile_target="p90",
+        ),
+        ReplenishmentDecisionRow(
+            unique_id="A",
+            ds="2024-01-02",
+            quantity=simulations["A"].snapshots[1].order_placed,
+            sigma=1.25,
+            aggregation_window=1,
+            percentile_target="p90",
+        ),
+    ]
+
+
+def test_build_replenishment_decisions_from_simulations_merges_metadata():
+    rows = [
+        StandardSimulationRow(
+            unique_id="A",
+            ds="2024-01-01",
+            demand=10,
+            forecast=11,
+            actuals=10,
+            holding_cost_per_unit=0.5,
+            stockout_cost_per_unit=3.0,
+            order_cost_per_order=2.0,
+            lead_time=1,
+            initial_on_hand=8,
+            current_stock=8,
+            forecast_percentiles={},
+        ),
+        StandardSimulationRow(
+            unique_id="A",
+            ds="2024-01-02",
+            demand=9,
+            forecast=10,
+            actuals=9,
+            holding_cost_per_unit=0.5,
+            stockout_cost_per_unit=3.0,
+            order_cost_per_order=2.0,
+            lead_time=1,
+            initial_on_hand=8,
+            current_stock=8,
+            forecast_percentiles={},
+        ),
+    ]
+
+    configs = build_point_forecast_article_configs_from_standard_rows(
+        rows,
+        service_level_factor=0.9,
+    )
+    simulations = simulate_replenishment_for_articles(configs)
+
+    decisions = build_replenishment_decisions_from_simulations(
+        rows,
+        simulations,
+        sigma=1.5,
+        decision_metadata={
+            "A": ReplenishmentDecisionMetadata(percentile_target="p95")
+        },
+    )
+
+    assert decisions == [
+        ReplenishmentDecisionRow(
+            unique_id="A",
+            ds="2024-01-01",
+            quantity=simulations["A"].snapshots[0].order_placed,
+            sigma=1.5,
+            aggregation_window=1,
+            percentile_target="p95",
+        ),
+        ReplenishmentDecisionRow(
+            unique_id="A",
+            ds="2024-01-02",
+            quantity=simulations["A"].snapshots[1].order_placed,
+            sigma=1.5,
+            aggregation_window=1,
+            percentile_target="p95",
+        ),
+    ]
 
 
 def test_standard_simulation_rows_from_dataframe_history_and_cutoff():
