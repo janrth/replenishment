@@ -204,6 +204,25 @@ def test_simulation_with_aggregation_truncates_demand_to_periods():
     assert result.summary.total_demand == 15
 
 
+def test_simulation_with_aggregation_allows_empty_actuals():
+    policy = PointForecastOptimizationPolicy(
+        forecast=[10, 12],
+        actuals=[],
+        lead_time=0,
+        service_level_factor=1.0,
+    )
+    result = simulate_replenishment_with_aggregation(
+        periods=2,
+        demand=[10, 11],
+        initial_on_hand=0,
+        lead_time=0,
+        policy=policy,
+        aggregation_window=1,
+    )
+
+    assert len(result.snapshots) == 2
+
+
 def test_optimize_aggregation_windows_picks_first_best():
     policy = ReorderPointPolicy(reorder_point=-1, order_quantity=0)
     config = ArticleSimulationConfig(
