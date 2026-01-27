@@ -268,6 +268,8 @@ def build_replenishment_decisions_from_simulations(
     simulations: Mapping[str, SimulationResult],
     *,
     aggregation_window: Mapping[str, int] | int = 1,
+    sigma: Mapping[str, float] | float | None = None,
+    percentile_target: Mapping[str, float | str] | float | str | None = None,
     decision_metadata: Mapping[str, ReplenishmentDecisionMetadata] | None = None,
 ) -> list[ReplenishmentDecisionRow]:
     if hasattr(rows, "to_dicts") or hasattr(rows, "to_dict"):
@@ -290,7 +292,31 @@ def build_replenishment_decisions_from_simulations(
             raise ValueError(
                 f"Aggregation window {window} is incompatible with ds length for unique_id '{unique_id}'."
             )
-        metadata = metadata_lookup.get(unique_id, ReplenishmentDecisionMetadata())
+        sigma_value = _resolve_optional_value(sigma, unique_id, "sigma")
+        target_value = _resolve_optional_value(
+            percentile_target, unique_id, "percentile_target"
+        )
+        metadata = metadata_lookup.get(unique_id)
+        if metadata is None:
+            metadata = ReplenishmentDecisionMetadata(
+                sigma=sigma_value,
+                aggregation_window=window,
+                percentile_target=target_value,
+            )
+        else:
+            metadata = ReplenishmentDecisionMetadata(
+                sigma=metadata.sigma if metadata.sigma is not None else sigma_value,
+                aggregation_window=(
+                    metadata.aggregation_window
+                    if metadata.aggregation_window is not None
+                    else window
+                ),
+                percentile_target=(
+                    metadata.percentile_target
+                    if metadata.percentile_target is not None
+                    else target_value
+                ),
+            )
         for index, snapshot in enumerate(simulation.snapshots):
             ds = ds_values[index * window]
             decisions.append(
@@ -913,6 +939,20 @@ def split_standard_simulation_rows(
 def _resolve_value(
     value: Mapping[str, int | float] | int | float, unique_id: str, name: str
 ) -> int | float:
+    if isinstance(value, Mapping):
+        if unique_id not in value:
+            raise ValueError(f"Missing {name} for unique_id '{unique_id}'.")
+        return value[unique_id]
+    return value
+
+
+def _resolve_optional_value(
+    value: Mapping[str, int | float | str] | int | float | str | None,
+    unique_id: str,
+    name: str,
+) -> int | float | str | None:
+    if value is None:
+        return None
     if isinstance(value, Mapping):
         if unique_id not in value:
             raise ValueError(f"Missing {name} for unique_id '{unique_id}'.")
