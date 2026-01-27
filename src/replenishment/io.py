@@ -280,7 +280,7 @@ def build_replenishment_decisions_from_optimization_results(
     rows,
     optimization_results: Mapping[str, object],
     *,
-    aggregation_window: Mapping[str, int] | int = 1,
+    aggregation_window: Mapping[str, int] | int | None = None,
 ) -> list[ReplenishmentDecisionRow]:
     simulations: dict[str, SimulationResult] = {}
     windows: dict[str, int] = {}
@@ -297,8 +297,10 @@ def build_replenishment_decisions_from_optimization_results(
                 raise TypeError("Optimization result window must be an int.")
             windows[unique_id] = window
 
-    window_override = {}
-    if isinstance(aggregation_window, Mapping):
+    window_override: dict[str, int] = {}
+    if aggregation_window is None:
+        window_override = {}
+    elif isinstance(aggregation_window, Mapping):
         window_override = dict(aggregation_window)
     elif isinstance(aggregation_window, int):
         window_override = {unique_id: aggregation_window for unique_id in simulations}
@@ -312,6 +314,18 @@ def build_replenishment_decisions_from_optimization_results(
                 f" {windows[unique_id]} vs {window}."
             )
         windows.setdefault(unique_id, window)
+
+    missing = [unique_id for unique_id in simulations if unique_id not in windows]
+    if missing:
+        if aggregation_window is None:
+            for unique_id in missing:
+                windows[unique_id] = 1
+        else:
+            missing_str = "', '".join(sorted(missing))
+            raise ValueError(
+                "Aggregation window missing for unique_id(s):"
+                f" '{missing_str}'."
+            )
 
     return build_replenishment_decisions_from_simulations(
         rows,
