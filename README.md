@@ -260,3 +260,5 @@ percentile_result = optimize_forecast_targets(percentile_configs)
 ## Notebook
 
 See `notebooks/stock_replenishment_example.ipynb` for a runnable example.
+For generated input data feeding the simulation and optimizers, use
+`notebooks/generated_data_example.ipynb`.
