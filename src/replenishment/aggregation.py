@@ -72,12 +72,25 @@ def aggregate_policy(
             window=window,
             extend_last=True,
         )
-        aggregated_actuals = aggregate_series(
-            policy.actuals,
-            periods=periods,
-            window=window,
-            extend_last=False,
-        )
+        if callable(policy.actuals):
+            aggregated_actuals = aggregate_series(
+                policy.actuals,
+                periods=periods,
+                window=window,
+                extend_last=False,
+            )
+        else:
+            actual_values = list(policy.actuals)
+            aggregated_actuals = (
+                []
+                if not actual_values
+                else aggregate_series(
+                    actual_values,
+                    periods=periods,
+                    window=window,
+                    extend_last=False,
+                )
+            )
         return PointForecastOptimizationPolicy(
             forecast=aggregated_forecast,
             actuals=aggregated_actuals,
