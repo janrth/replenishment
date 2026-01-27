@@ -160,6 +160,11 @@ def iter_standard_simulation_rows_from_csv(
                 and key != forecast_field
                 and value != ""
             }
+            _validate_matching_initial_inventory(
+                row,
+                initial_on_hand_field=initial_on_hand_field,
+                initial_demand_field=initial_demand_field,
+            )
             initial_on_hand = _coalesce_row_value(
                 row, initial_on_hand_field, initial_demand_field
             )
@@ -485,3 +490,29 @@ def _validate_required_columns(
         raise ValueError(
             f"{context} is missing required columns: {missing_display}."
         )
+
+
+def _validate_matching_initial_inventory(
+    row: Mapping[str, str],
+    *,
+    initial_on_hand_field: str,
+    initial_demand_field: str,
+) -> None:
+    if (
+        initial_on_hand_field in row
+        and initial_demand_field in row
+        and row[initial_on_hand_field] != ""
+        and row[initial_demand_field] != ""
+    ):
+        initial_on_hand = int(row[initial_on_hand_field])
+        initial_demand = int(row[initial_demand_field])
+        if initial_on_hand != initial_demand:
+            warnings.warn(
+                "Initial inventory mismatch between "
+                f"{initial_on_hand_field} ({initial_on_hand}) and "
+                f"{initial_demand_field} ({initial_demand}).",
+                stacklevel=2,
+            )
+            raise ValueError(
+                f"{initial_on_hand_field} and {initial_demand_field} must match when both are provided."
+            )

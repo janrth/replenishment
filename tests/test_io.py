@@ -215,3 +215,31 @@ def test_iter_standard_simulation_rows_requires_current_stock(tmp_path):
     with pytest.warns(UserWarning, match="current_stock"):
         with pytest.raises(ValueError, match="current_stock"):
             list(iter_standard_simulation_rows_from_csv(str(path)))
+
+
+def test_iter_standard_simulation_rows_requires_matching_initial_inventory(tmp_path):
+    path = tmp_path / "mismatch.csv"
+    _write_csv(
+        path,
+        [
+            "unique_id",
+            "ds",
+            "demand",
+            "forecast",
+            "actuals",
+            "holding_cost_per_unit",
+            "stockout_cost_per_unit",
+            "order_cost_per_order",
+            "lead_time",
+            "initial_on_hand",
+            "initial_demand",
+            "current_stock",
+        ],
+        [
+            ["A", "2024-01-01", 10, 12, 11, 0.5, 3.0, 2.0, 1, 5, 7, 8],
+        ],
+    )
+
+    with pytest.warns(UserWarning, match="Initial inventory mismatch"):
+        with pytest.raises(ValueError, match="initial_on_hand and initial_demand"):
+            list(iter_standard_simulation_rows_from_csv(str(path)))
