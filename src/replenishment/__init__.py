@@ -38,6 +38,8 @@ from .io import (
     iter_percentile_forecast_rows_from_csv,
     iter_point_forecast_rows_from_csv,
     iter_standard_simulation_rows_from_csv,
+    split_standard_simulation_rows,
+    standard_simulation_rows_to_dataframe,
     standard_simulation_rows_to_dicts,
     write_standard_simulation_rows_to_csv,
 )
@@ -78,6 +80,8 @@ __all__ = [
     "iter_point_forecast_rows_from_csv",
     "iter_percentile_forecast_rows_from_csv",
     "iter_standard_simulation_rows_from_csv",
+    "split_standard_simulation_rows",
+    "standard_simulation_rows_to_dataframe",
     "standard_simulation_rows_to_dicts",
     "write_standard_simulation_rows_to_csv",
     "build_point_forecast_article_configs",

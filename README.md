@@ -223,6 +223,8 @@ Optional percentile forecast columns:
 
 - Any column named `forecast_<label>` will be treated as a percentile candidate for
   percentile optimization (for example, `forecast_p50`, `forecast_p90`).
+- `is_forecast`: Boolean flag that marks rows after the backtest cutoff. Use this to split
+  history used for optimization from future forecast horizons used for decisioning.
 
 Example usage:
 
@@ -234,26 +236,32 @@ from replenishment import (
     iter_standard_simulation_rows_from_csv,
     optimize_forecast_targets,
     optimize_service_level_factors,
+    split_standard_simulation_rows,
+    standard_simulation_rows_to_dataframe,
 )
 
 rows = generate_standard_simulation_rows(
     n_unique_ids=2,
     periods=6,
+    forecast_start_period=4,
     history_mean=18,
     history_std=4,
     forecast_mean=20,
     forecast_std=3,
     seed=42,
 )
+# Convert to a DataFrame for inspection (pandas or polars).
+df = standard_simulation_rows_to_dataframe(rows, library="pandas")
 # Or load the same schema from CSV:
 # rows = list(iter_standard_simulation_rows_from_csv("simulation_inputs.csv"))
+backtest_rows, forecast_rows = split_standard_simulation_rows(rows)
 point_configs = build_point_forecast_article_configs_from_standard_rows(
-    rows,
+    backtest_rows,
     service_level_factor=0.9,
 )
 point_result = optimize_service_level_factors(point_configs, candidate_factors=[0.8, 0.9])
 
-percentile_configs = build_percentile_forecast_candidates_from_standard_rows(rows)
+percentile_configs = build_percentile_forecast_candidates_from_standard_rows(backtest_rows)
 percentile_result = optimize_forecast_targets(percentile_configs)
 ```
 

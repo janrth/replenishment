@@ -48,6 +48,7 @@ class StandardSimulationRow:
     initial_on_hand: int
     current_stock: int
     forecast_percentiles: Mapping[str, int]
+    is_forecast: bool = False
 
 
 def generate_standard_simulation_rows(
@@ -56,6 +57,7 @@ def generate_standard_simulation_rows(
     periods: int,
     start_date: str | date | datetime = "2024-01-01",
     frequency_days: int = 30,
+    forecast_start_period: int | None = None,
     history_mean: float = 20.0,
     history_std: float = 5.0,
     forecast_mean: float = 20.0,
@@ -76,6 +78,8 @@ def generate_standard_simulation_rows(
         raise ValueError("periods must be positive.")
     if frequency_days <= 0:
         raise ValueError("frequency_days must be positive.")
+    if forecast_start_period is not None and not (0 <= forecast_start_period <= periods):
+        raise ValueError("forecast_start_period must be within the period range.")
 
     if isinstance(start_date, str):
         base_date = date.fromisoformat(start_date)
@@ -103,6 +107,9 @@ def generate_standard_simulation_rows(
     rows: list[StandardSimulationRow] = []
     for unique_id in unique_ids:
         for period in range(periods):
+            is_forecast = (
+                forecast_start_period is not None and period >= forecast_start_period
+            )
             ds = (base_date + timedelta(days=period * frequency_days)).isoformat()
             demand = sample_int(history_mean, history_std)
             actuals = sample_int(history_mean, history_std)
@@ -125,6 +132,7 @@ def generate_standard_simulation_rows(
                     initial_on_hand=initial_on_hand,
                     current_stock=initial_on_hand if current_stock is None else current_stock,
                     forecast_percentiles=forecast_percentiles,
+                    is_forecast=is_forecast,
                 )
             )
     return rows
@@ -134,11 +142,11 @@ def standard_simulation_rows_to_dicts(
     rows: Iterable[StandardSimulationRow],
     *,
     forecast_prefix: str = "forecast_",
-) -> list[dict[str, str | int | float]]:
+) -> list[dict[str, str | int | float | bool]]:
     """Convert standard rows into dictionaries suitable for DataFrame or CSV use."""
     serialized: list[dict[str, str | int | float]] = []
     for row in rows:
-        entry: dict[str, str | int | float] = {
+        entry: dict[str, str | int | float | bool] = {
             "unique_id": row.unique_id,
             "ds": row.ds,
             "demand": row.demand,
@@ -150,11 +158,39 @@ def standard_simulation_rows_to_dicts(
             "lead_time": row.lead_time,
             "initial_on_hand": row.initial_on_hand,
             "current_stock": row.current_stock,
+            "is_forecast": row.is_forecast,
         }
         for label, value in row.forecast_percentiles.items():
             entry[f"{forecast_prefix}{label}"] = value
         serialized.append(entry)
     return serialized
+
+
+def standard_simulation_rows_to_dataframe(
+    rows: Iterable[StandardSimulationRow],
+    *,
+    library: str = "pandas",
+    forecast_prefix: str = "forecast_",
+):
+    """Convert standard rows into a pandas or polars DataFrame."""
+    data = standard_simulation_rows_to_dicts(rows, forecast_prefix=forecast_prefix)
+    if library == "pandas":
+        try:
+            import pandas as pd  # type: ignore
+        except ModuleNotFoundError as exc:
+            raise ModuleNotFoundError(
+                "pandas is required for standard_simulation_rows_to_dataframe(library='pandas')."
+            ) from exc
+        return pd.DataFrame(data)
+    if library == "polars":
+        try:
+            import polars as pl  # type: ignore
+        except ModuleNotFoundError as exc:
+            raise ModuleNotFoundError(
+                "polars is required for standard_simulation_rows_to_dataframe(library='polars')."
+            ) from exc
+        return pl.DataFrame(data)
+    raise ValueError("library must be 'pandas' or 'polars'.")
 
 
 def write_standard_simulation_rows_to_csv(
@@ -182,6 +218,7 @@ def write_standard_simulation_rows_to_csv(
         "lead_time",
         "initial_on_hand",
         "current_stock",
+        "is_forecast",
     ] + [f"{forecast_prefix}{label}" for label in percentile_labels]
     with open(path, "w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -271,6 +308,7 @@ def iter_standard_simulation_rows_from_csv(
     initial_on_hand_field: str = "initial_on_hand",
     initial_demand_field: str = "initial_demand",
     current_stock_field: str = "current_stock",
+    is_forecast_field: str = "is_forecast",
     forecast_prefix: str = "forecast_",
 ) -> Iterator[StandardSimulationRow]:
     with open(path, newline="") as handle:
@@ -320,6 +358,11 @@ def iter_standard_simulation_rows_from_csv(
             current_stock_value = _coalesce_row_value(row, current_stock_field)
             if current_stock_value is None:
                 current_stock_value = initial_on_hand
+            is_forecast_value = False
+            if is_forecast_field in row and row[is_forecast_field] != "":
+                is_forecast_value = _parse_bool(
+                    row[is_forecast_field], field=is_forecast_field
+                )
             yield StandardSimulationRow(
                 unique_id=row[unique_id_field],
                 ds=row[ds_field],
@@ -333,6 +376,7 @@ def iter_standard_simulation_rows_from_csv(
                 initial_on_hand=initial_on_hand,
                 current_stock=current_stock_value,
                 forecast_percentiles=forecast_percentiles,
+                is_forecast=is_forecast_value,
             )
 
 
@@ -530,6 +574,20 @@ def build_percentile_forecast_candidates_from_standard_rows(
     return configs
 
 
+def split_standard_simulation_rows(
+    rows: Iterable[StandardSimulationRow],
+) -> tuple[list[StandardSimulationRow], list[StandardSimulationRow]]:
+    """Split standard rows into backtest and forecast partitions."""
+    backtest_rows: list[StandardSimulationRow] = []
+    forecast_rows: list[StandardSimulationRow] = []
+    for row in rows:
+        if row.is_forecast:
+            forecast_rows.append(row)
+        else:
+            backtest_rows.append(row)
+    return backtest_rows, forecast_rows
+
+
 def _resolve_value(
     value: Mapping[str, int | float] | int | float, unique_id: str, name: str
 ) -> int | float:
@@ -661,3 +719,12 @@ def _validate_matching_initial_inventory(
             raise ValueError(
                 f"{initial_on_hand_field} and {initial_demand_field} must match when both are provided."
             )
+
+
+def _parse_bool(value: str, *, field: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "y", "t"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "f"}:
+        return False
+    raise ValueError(f"Invalid boolean value for {field}: {value!r}.")
