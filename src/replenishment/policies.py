@@ -24,6 +24,14 @@ def _normalize_series(series: Iterable[int] | DemandModel) -> DemandModel:
     return model
 
 
+def _is_missing_value(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, float):
+        return math.isnan(value)
+    return False
+
+
 @dataclass(frozen=True)
 class ReorderPointPolicy:
     """Order up to a fixed quantity when inventory position falls below a point."""
@@ -92,10 +100,20 @@ class ForecastBasedPolicy:
             max_index = min(max_index, len(self._forecast_values))
         if max_index <= 0:
             return 0.0
-        errors = [
-            self._actual_model(index) - self._forecast_model(index)
-            for index in range(max_index)
-        ]
+        errors = []
+        for index in range(max_index):
+            if self._actual_values is not None:
+                actual = self._actual_values[index]
+                if _is_missing_value(actual):
+                    continue
+            else:
+                actual = self._actual_model(index)
+                if _is_missing_value(actual):
+                    continue
+            forecast_value = self._forecast_model(index)
+            errors.append(actual - forecast_value)
+        if not errors:
+            return 0.0
         if len(errors) == 1:
             sigma = abs(errors[0])
         else:
@@ -206,10 +224,20 @@ class PointForecastOptimizationPolicy:
             max_index = min(max_index, len(self._forecast_values))
         if max_index <= 0:
             return 0.0
-        errors = [
-            self._actual_model(index) - self._forecast_model(index)
-            for index in range(max_index)
-        ]
+        errors = []
+        for index in range(max_index):
+            if self._actual_values is not None:
+                actual = self._actual_values[index]
+                if _is_missing_value(actual):
+                    continue
+            else:
+                actual = self._actual_model(index)
+                if _is_missing_value(actual):
+                    continue
+            forecast_value = self._forecast_model(index)
+            errors.append(actual - forecast_value)
+        if not errors:
+            return 0.0
         if len(errors) == 1:
             return abs(errors[0])
         mean_squared_error = statistics.fmean(error**2 for error in errors)

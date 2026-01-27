@@ -224,7 +224,8 @@ Optional percentile forecast columns:
 - Any column named `forecast_<label>` will be treated as a percentile candidate for
   percentile optimization (for example, `forecast_p50`, `forecast_p90`).
 - `is_forecast`: Boolean flag that marks rows after the backtest cutoff. Use this to split
-  history used for optimization from future forecast horizons used for decisioning.
+  history used for optimization from future forecast horizons used for decisioning. When
+  you reach the cutoff, `actuals` can be left blank/NaN for forecast-only rows.
 
 Example usage:
 
@@ -238,6 +239,7 @@ from replenishment import (
     optimize_service_level_factors,
     split_standard_simulation_rows,
     standard_simulation_rows_to_dataframe,
+    standard_simulation_rows_from_dataframe,
 )
 
 rows = generate_standard_simulation_rows(
@@ -252,6 +254,9 @@ rows = generate_standard_simulation_rows(
 )
 # Convert to a DataFrame for inspection (pandas or polars).
 df = standard_simulation_rows_to_dataframe(rows, library="pandas")
+# Or start from a pandas/polars DataFrame that has history + forecast columns.
+# When actuals/history are missing after the cutoff, they can be NaN.
+# rows = standard_simulation_rows_from_dataframe(df, cutoff="2024-05-01")
 # Or load the same schema from CSV:
 # rows = list(iter_standard_simulation_rows_from_csv("simulation_inputs.csv"))
 backtest_rows, forecast_rows = split_standard_simulation_rows(rows)
