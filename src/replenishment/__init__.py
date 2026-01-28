@@ -58,6 +58,7 @@ from .simulation import (
     simulate_replenishment,
     simulate_replenishment_for_articles,
 )
+from .plotting import plot_replenishment_decisions
 
 __all__ = [
     "DemandModel",
@@ -103,6 +104,7 @@ __all__ = [
     "simulate_replenishment",
     "simulate_replenishment_with_aggregation",
     "simulate_replenishment_for_articles",
+    "plot_replenishment_decisions",
     "optimize_aggregation_and_forecast_targets",
     "optimize_aggregation_and_service_level_factors",
     "optimize_aggregation_windows",
