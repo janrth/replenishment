@@ -72,38 +72,40 @@ def _prepare_timeseries(
             decisions["unique_id"] == unique_id, ["ds", "quantity"]
         ].rename(columns={"quantity": "replenishment"})
 
-    data = grouped_rows.merge(grouped_decisions, on="ds", how="left")
+    data = grouped_rows.merge(grouped_decisions, on="ds", how="outer")
     data["replenishment"] = data["replenishment"].fillna(0)
     return data.sort_values("ds")
 
 
-def _build_projected_stock_series(
-    series: pd.DataFrame,
-) -> list[tuple[str, pd.DataFrame]]:
-    series = series.sort_values("ds").reset_index(drop=True)
-    decision_indices = series.index[series["replenishment"] != 0].to_list()
-    if not decision_indices:
-        return []
+def _initial_stock_level(
+    rows: pd.DataFrame, *, unique_id: str | None, aggregate: bool
+) -> float:
+    if aggregate:
+        sorted_rows = rows.sort_values(["unique_id", "ds"])
+        first_rows = sorted_rows.groupby("unique_id", as_index=False).first()
+        stock = first_rows["current_stock"].fillna(first_rows["initial_on_hand"])
+        return float(stock.sum()) if not stock.empty else 0.0
+    if unique_id is None:
+        return 0.0
+    subset = rows.loc[rows["unique_id"] == unique_id].sort_values("ds")
+    if subset.empty:
+        return 0.0
+    current = subset["current_stock"].iloc[0]
+    if pd.isna(current):
+        current = subset["initial_on_hand"].iloc[0]
+    return float(current)
 
-    projected_lines: list[tuple[str, pd.DataFrame]] = []
-    for idx, start_index in enumerate(decision_indices):
-        end_index = decision_indices[idx + 1] if idx + 1 < len(decision_indices) else None
-        window = series.iloc[start_index:end_index].copy()
-        replenishment_qty = window["replenishment"].iloc[0]
-        forecast_values = window["forecast"].fillna(0).astype(float)
-        if len(window) == 1:
-            projected = pd.Series([float(replenishment_qty)], index=window.index)
-        else:
-            forecast_after = forecast_values.iloc[1:].cumsum()
-            projected = pd.Series(
-                [float(replenishment_qty)]
-                + list(float(replenishment_qty) - forecast_after),
-                index=window.index,
-            )
-        window["projected_stock"] = projected
-        label = f"Replenishment decision ({window['ds'].iloc[0].date()})"
-        projected_lines.append((label, window))
-    return projected_lines
+
+def _build_stock_series(series: pd.DataFrame, initial_stock: float) -> pd.Series:
+    demand = series["actuals"].where(series["actuals"].notna(), series["forecast"])
+    demand = demand.fillna(0).astype(float)
+    replenishment = series["replenishment"].fillna(0).astype(float)
+    stock_values: list[float] = []
+    stock = float(initial_stock)
+    for replenishment_qty, consumption in zip(replenishment, demand, strict=False):
+        stock = stock + float(replenishment_qty) - float(consumption)
+        stock_values.append(stock)
+    return pd.Series(stock_values, index=series.index)
 
 
 def plot_replenishment_decisions(
@@ -123,33 +125,29 @@ def plot_replenishment_decisions(
     series = _prepare_timeseries(
         rows_df, decisions_df, unique_id=unique_id, aggregate=aggregate
     )
+    initial_stock = _initial_stock_level(
+        rows_df, unique_id=unique_id, aggregate=aggregate
+    )
+    stock_series = _build_stock_series(series, initial_stock)
 
     if ax is None:
         _, ax = plt.subplots(figsize=(10, 5))
 
     ax.plot(series["ds"], series["actuals"], label="Actuals", marker="o")
     ax.plot(series["ds"], series["forecast"], label="Forecast", linestyle="--")
-    projected_series = _build_projected_stock_series(series)
-    if projected_series:
-        for label, decision_window in projected_series:
-            ax.plot(
-                decision_window["ds"],
-                decision_window["projected_stock"],
-                label=label,
-                linestyle="-.",
-            )
-    elif decision_style == "line":
+    ax.plot(series["ds"], stock_series, label="Projected stock", linestyle="-.")
+    if decision_style == "line":
         ax.plot(
             series["ds"],
             series["replenishment"],
-            label="Replenishment",
+            label="Replenishment decision",
             linestyle="-.",
         )
     else:
         ax.bar(
             series["ds"],
             series["replenishment"],
-            label="Replenishment",
+            label="Replenishment decision",
             alpha=0.3,
         )
 
