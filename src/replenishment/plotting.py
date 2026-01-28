@@ -108,6 +108,24 @@ def _build_stock_series(series: pd.DataFrame, initial_stock: float) -> pd.Series
     return pd.Series(stock_values, index=series.index)
 
 
+def _adjust_for_decision_start(
+    series: pd.DataFrame, *, start_date: pd.Timestamp | None, initial_stock: float
+) -> tuple[pd.DataFrame, float]:
+    if start_date is None:
+        return series, initial_stock
+    series = series.sort_values("ds")
+    prior_mask = series["ds"] < start_date
+    if prior_mask.any():
+        prior = series.loc[prior_mask, ["actuals", "forecast"]]
+        prior_demand = (
+            prior["actuals"].where(prior["actuals"].notna(), prior["forecast"])
+        )
+        prior_demand = prior_demand.fillna(0).astype(float)
+        initial_stock = float(initial_stock) - float(prior_demand.sum())
+    series = series.loc[series["ds"] >= start_date]
+    return series, initial_stock
+
+
 def plot_replenishment_decisions(
     rows: Iterable[StandardSimulationRow] | pd.DataFrame,
     decisions: Iterable[ReplenishmentDecisionRow] | pd.DataFrame,
@@ -125,8 +143,18 @@ def plot_replenishment_decisions(
     series = _prepare_timeseries(
         rows_df, decisions_df, unique_id=unique_id, aggregate=aggregate
     )
+    decisions_df = decisions_df.copy()
+    decisions_df["ds"] = pd.to_datetime(decisions_df["ds"])
     initial_stock = _initial_stock_level(
         rows_df, unique_id=unique_id, aggregate=aggregate
+    )
+    if aggregate:
+        start_date = decisions_df["ds"].min() if not decisions_df.empty else None
+    else:
+        subset = decisions_df.loc[decisions_df["unique_id"] == unique_id, "ds"]
+        start_date = subset.min() if not subset.empty else None
+    series, initial_stock = _adjust_for_decision_start(
+        series, start_date=start_date, initial_stock=initial_stock
     )
     stock_series = _build_stock_series(series, initial_stock)
 
