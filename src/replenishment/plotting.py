@@ -77,6 +77,35 @@ def _prepare_timeseries(
     return data.sort_values("ds")
 
 
+def _build_projected_stock_series(
+    series: pd.DataFrame,
+) -> list[tuple[str, pd.DataFrame]]:
+    series = series.sort_values("ds").reset_index(drop=True)
+    decision_indices = series.index[series["replenishment"] != 0].to_list()
+    if not decision_indices:
+        return []
+
+    projected_lines: list[tuple[str, pd.DataFrame]] = []
+    for idx, start_index in enumerate(decision_indices):
+        end_index = decision_indices[idx + 1] if idx + 1 < len(decision_indices) else None
+        window = series.iloc[start_index:end_index].copy()
+        replenishment_qty = window["replenishment"].iloc[0]
+        forecast_values = window["forecast"].fillna(0).astype(float)
+        if len(window) == 1:
+            projected = pd.Series([float(replenishment_qty)], index=window.index)
+        else:
+            forecast_after = forecast_values.iloc[1:].cumsum()
+            projected = pd.Series(
+                [float(replenishment_qty)]
+                + list(float(replenishment_qty) - forecast_after),
+                index=window.index,
+            )
+        window["projected_stock"] = projected
+        label = f"Replenishment decision ({window['ds'].iloc[0].date()})"
+        projected_lines.append((label, window))
+    return projected_lines
+
+
 def plot_replenishment_decisions(
     rows: Iterable[StandardSimulationRow] | pd.DataFrame,
     decisions: Iterable[ReplenishmentDecisionRow] | pd.DataFrame,
@@ -100,8 +129,16 @@ def plot_replenishment_decisions(
 
     ax.plot(series["ds"], series["actuals"], label="Actuals", marker="o")
     ax.plot(series["ds"], series["forecast"], label="Forecast", linestyle="--")
-
-    if decision_style == "line":
+    projected_series = _build_projected_stock_series(series)
+    if projected_series:
+        for label, decision_window in projected_series:
+            ax.plot(
+                decision_window["ds"],
+                decision_window["projected_stock"],
+                label=label,
+                linestyle="-.",
+            )
+    elif decision_style == "line":
         ax.plot(
             series["ds"],
             series["replenishment"],
