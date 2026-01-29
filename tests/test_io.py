@@ -16,6 +16,7 @@ from replenishment import (
     iter_percentile_forecast_rows_from_csv,
     iter_point_forecast_rows_from_csv,
     iter_standard_simulation_rows_from_csv,
+    optimize_point_forecast_policy_and_simulate_actuals,
     optimize_aggregation_windows,
     split_standard_simulation_rows,
     standard_simulation_rows_from_dataframe,
@@ -227,6 +228,110 @@ def test_build_percentile_candidates_include_mean():
     assert set(configs["A"].forecast_candidates.keys()) == {"p50", "mean"}
 
 
+def test_build_point_forecast_article_configs_uses_actuals_override():
+    rows = [
+        StandardSimulationRow(
+            unique_id="A",
+            ds="2024-01-01",
+            demand=10,
+            forecast=12,
+            actuals=None,
+            holding_cost_per_unit=0.5,
+            stockout_cost_per_unit=3.0,
+            order_cost_per_order=2.0,
+            lead_time=1,
+            initial_on_hand=5,
+            current_stock=8,
+            forecast_percentiles={},
+            is_forecast=True,
+        ),
+        StandardSimulationRow(
+            unique_id="A",
+            ds="2024-01-02",
+            demand=11,
+            forecast=13,
+            actuals=None,
+            holding_cost_per_unit=0.5,
+            stockout_cost_per_unit=3.0,
+            order_cost_per_order=2.0,
+            lead_time=1,
+            initial_on_hand=5,
+            current_stock=8,
+            forecast_percentiles={},
+            is_forecast=True,
+        ),
+    ]
+
+    configs = build_point_forecast_article_configs_from_standard_rows(
+        rows,
+        service_level_factor=0.5,
+        actuals_override={"A": [9, 10]},
+    )
+
+    policy = configs["A"].policy
+    assert policy._actual_values == [9, 10]
+
+
+def test_optimize_point_forecast_policy_and_simulate_actuals():
+    backtest_rows = [
+        StandardSimulationRow(
+            unique_id="A",
+            ds="2024-01-01",
+            demand=10,
+            forecast=11,
+            actuals=10,
+            holding_cost_per_unit=0.5,
+            stockout_cost_per_unit=3.0,
+            order_cost_per_order=2.0,
+            lead_time=1,
+            initial_on_hand=8,
+            current_stock=8,
+            forecast_percentiles={},
+        ),
+        StandardSimulationRow(
+            unique_id="A",
+            ds="2024-01-02",
+            demand=9,
+            forecast=10,
+            actuals=9,
+            holding_cost_per_unit=0.5,
+            stockout_cost_per_unit=3.0,
+            order_cost_per_order=2.0,
+            lead_time=1,
+            initial_on_hand=8,
+            current_stock=8,
+            forecast_percentiles={},
+        ),
+    ]
+    evaluation_rows = [
+        StandardSimulationRow(
+            unique_id="A",
+            ds="2024-01-03",
+            demand=8,
+            forecast=9,
+            actuals=8,
+            holding_cost_per_unit=0.5,
+            stockout_cost_per_unit=3.0,
+            order_cost_per_order=2.0,
+            lead_time=1,
+            initial_on_hand=8,
+            current_stock=6,
+            forecast_percentiles={},
+            is_forecast=True,
+        )
+    ]
+
+    optimized, _, decisions = optimize_point_forecast_policy_and_simulate_actuals(
+        backtest_rows,
+        evaluation_rows,
+        candidate_factors=[0.0],
+    )
+
+    assert optimized["A"].service_level_factor == 0.0
+    assert decisions[0].sigma == 0.0
+    assert decisions[0].demand == 8
+
+
 def test_build_configs_use_current_stock_for_forecast_rows():
     rows = [
         StandardSimulationRow(
@@ -375,25 +480,54 @@ def test_build_replenishment_decisions_from_simulations():
 
     snapshots = simulation.snapshots
     forecast_values = [row.forecast for row in rows]
+    actuals_values = [row.actuals for row in rows]
+    aggregated_forecast = [
+        sum(forecast_values[index : index + 2])
+        for index in range(0, len(forecast_values), 2)
+    ]
+    aggregated_actuals = [
+        sum(actuals_values[index : index + 2])
+        for index in range(0, len(actuals_values), 2)
+    ]
+    safety_stock_values = [
+        0.0,
+        0.9 * abs(aggregated_actuals[0] - aggregated_forecast[0]),
+    ]
     expected = []
+    running_stock = rows[0].current_stock
     for index, snapshot in enumerate(snapshots):
         start = index * 2
         end = min(start + 2, len(forecast_values))
+        stock_before = float(running_stock) + float(snapshot.received)
+        starting_stock = int(round(stock_before))
+        forecast_quantity = sum(forecast_values[start:end])
+        stock_after = stock_before - float(snapshot.demand)
+        if stock_after < 0:
+            missed_sales = int(round(-stock_after))
+            stock_after = 0.0
+        else:
+            missed_sales = 0
+        ending_stock = int(round(stock_after))
+        current_stock = ending_stock
+        running_stock = stock_after
         expected.append(
             ReplenishmentDecisionRow(
                 unique_id="A",
                 ds=rows[start].ds,
                 quantity=snapshot.order_placed,
                 demand=snapshot.demand,
-                forecast_quantity=sum(forecast_values[start:end]),
+                forecast_quantity=forecast_quantity,
                 incoming_stock=snapshot.received,
+                starting_stock=starting_stock,
+                ending_stock=ending_stock,
+                safety_stock=safety_stock_values[index],
                 starting_on_hand=snapshot.starting_on_hand,
                 ending_on_hand=snapshot.ending_on_hand,
+                current_stock=current_stock,
                 on_order=snapshot.on_order,
                 backorders=snapshot.backorders,
-                missed_sales=max(
-                    0, sum(forecast_values[start:end]) - snapshot.starting_on_hand
-                ),
+                missed_sales=missed_sales,
+                sigma=0.9,
                 aggregation_window=2,
             )
         )
@@ -464,31 +598,42 @@ def test_build_replenishment_decisions_from_optimization_results():
     simulation = optimization_results["A"].simulation
     window = optimization_results["A"].window
     forecast_values = [row.forecast for row in rows]
-    expected = [
-        ReplenishmentDecisionRow(
-            unique_id="A",
-            ds=rows[index * window].ds,
-            quantity=snapshot.order_placed,
-            demand=snapshot.demand,
-            forecast_quantity=sum(
-                forecast_values[index * window : index * window + window]
-            ),
-            incoming_stock=snapshot.received,
-            starting_on_hand=snapshot.starting_on_hand,
-            ending_on_hand=snapshot.ending_on_hand,
-            on_order=snapshot.on_order,
-            backorders=snapshot.backorders,
-            missed_sales=max(
-                0,
-                sum(
-                    forecast_values[index * window : index * window + window]
-                )
-                - snapshot.starting_on_hand,
-            ),
-            aggregation_window=window,
+    expected = []
+    running_stock = rows[0].current_stock
+    for index, snapshot in enumerate(simulation.snapshots):
+        start = index * window
+        end = start + window
+        forecast_quantity = sum(forecast_values[start:end])
+        stock_before = float(running_stock) + float(snapshot.received)
+        starting_stock = int(round(stock_before))
+        stock_after = stock_before - float(snapshot.demand)
+        if stock_after < 0:
+            missed_sales = int(round(-stock_after))
+            stock_after = 0.0
+        else:
+            missed_sales = 0
+        ending_stock = int(round(stock_after))
+        current_stock = ending_stock
+        running_stock = stock_after
+        expected.append(
+            ReplenishmentDecisionRow(
+                unique_id="A",
+                ds=rows[start].ds,
+                quantity=snapshot.order_placed,
+                demand=snapshot.demand,
+                forecast_quantity=forecast_quantity,
+                incoming_stock=snapshot.received,
+                starting_stock=starting_stock,
+                ending_stock=ending_stock,
+                starting_on_hand=snapshot.starting_on_hand,
+                ending_on_hand=snapshot.ending_on_hand,
+                current_stock=current_stock,
+                on_order=snapshot.on_order,
+                backorders=snapshot.backorders,
+                missed_sales=missed_sales,
+                aggregation_window=window,
+            )
         )
-        for index, snapshot in enumerate(simulation.snapshots)
-    ]
 
     assert decisions == expected
 
@@ -538,40 +683,48 @@ def test_build_replenishment_decisions_from_simulations_with_metadata_inputs():
         percentile_target="p90",
     )
 
-    assert decisions == [
-        ReplenishmentDecisionRow(
-            unique_id="A",
-            ds="2024-01-01",
-            quantity=simulations["A"].snapshots[0].order_placed,
-            demand=simulations["A"].snapshots[0].demand,
-            forecast_quantity=None,
-            incoming_stock=simulations["A"].snapshots[0].received,
-            starting_on_hand=simulations["A"].snapshots[0].starting_on_hand,
-            ending_on_hand=simulations["A"].snapshots[0].ending_on_hand,
-            on_order=simulations["A"].snapshots[0].on_order,
-            backorders=simulations["A"].snapshots[0].backorders,
-            missed_sales=None,
-            sigma=1.25,
-            aggregation_window=1,
-            percentile_target="p90",
-        ),
-        ReplenishmentDecisionRow(
-            unique_id="A",
-            ds="2024-01-02",
-            quantity=simulations["A"].snapshots[1].order_placed,
-            demand=simulations["A"].snapshots[1].demand,
-            forecast_quantity=None,
-            incoming_stock=simulations["A"].snapshots[1].received,
-            starting_on_hand=simulations["A"].snapshots[1].starting_on_hand,
-            ending_on_hand=simulations["A"].snapshots[1].ending_on_hand,
-            on_order=simulations["A"].snapshots[1].on_order,
-            backorders=simulations["A"].snapshots[1].backorders,
-            missed_sales=None,
-            sigma=1.25,
-            aggregation_window=1,
-            percentile_target="p90",
-        ),
+    running_stock = rows[0].current_stock
+    safety_stock_values = [
+        0.0,
+        1.25 * abs(rows[0].actuals - rows[0].forecast),
     ]
+    expected = []
+    for index, snapshot in enumerate(simulations["A"].snapshots):
+        stock_before = float(running_stock) + float(snapshot.received)
+        starting_stock = int(round(stock_before))
+        stock_after = stock_before - float(snapshot.demand)
+        if stock_after < 0:
+            missed_sales = int(round(-stock_after))
+            stock_after = 0.0
+        else:
+            missed_sales = 0
+        ending_stock = int(round(stock_after))
+        current_stock = ending_stock
+        running_stock = stock_after
+        expected.append(
+            ReplenishmentDecisionRow(
+                unique_id="A",
+                ds=rows[index].ds,
+                quantity=snapshot.order_placed,
+                demand=snapshot.demand,
+                forecast_quantity=None,
+                incoming_stock=snapshot.received,
+                starting_stock=starting_stock,
+                ending_stock=ending_stock,
+                safety_stock=safety_stock_values[index],
+                starting_on_hand=snapshot.starting_on_hand,
+                ending_on_hand=snapshot.ending_on_hand,
+                current_stock=current_stock,
+                on_order=snapshot.on_order,
+                backorders=snapshot.backorders,
+                missed_sales=missed_sales,
+                sigma=1.25,
+                aggregation_window=1,
+                percentile_target="p90",
+            )
+        )
+
+    assert decisions == expected
 
 
 def test_build_replenishment_decisions_from_simulations_merges_metadata():
@@ -621,40 +774,99 @@ def test_build_replenishment_decisions_from_simulations_merges_metadata():
         },
     )
 
-    assert decisions == [
-        ReplenishmentDecisionRow(
+    running_stock = rows[0].current_stock
+    forecast_values = [row.forecast for row in rows]
+    safety_stock_values = [
+        0.0,
+        1.5 * abs(rows[0].actuals - rows[0].forecast),
+    ]
+    expected = []
+    for index, snapshot in enumerate(simulations["A"].snapshots):
+        stock_before = float(running_stock) + float(snapshot.received)
+        starting_stock = int(round(stock_before))
+        forecast_quantity = forecast_values[index]
+        stock_after = stock_before - float(snapshot.demand)
+        if stock_after < 0:
+            missed_sales = int(round(-stock_after))
+            stock_after = 0.0
+        else:
+            missed_sales = 0
+        ending_stock = int(round(stock_after))
+        current_stock = ending_stock
+        running_stock = stock_after
+        expected.append(
+            ReplenishmentDecisionRow(
+                unique_id="A",
+                ds=rows[index].ds,
+                quantity=snapshot.order_placed,
+                demand=snapshot.demand,
+                forecast_quantity=forecast_quantity,
+                incoming_stock=snapshot.received,
+                starting_stock=starting_stock,
+                ending_stock=ending_stock,
+                safety_stock=safety_stock_values[index],
+                starting_on_hand=snapshot.starting_on_hand,
+                ending_on_hand=snapshot.ending_on_hand,
+                current_stock=current_stock,
+                on_order=snapshot.on_order,
+                backorders=snapshot.backorders,
+                missed_sales=missed_sales,
+                sigma=1.5,
+                aggregation_window=1,
+                percentile_target="p95",
+            )
+        )
+
+    assert decisions == expected
+
+
+def test_decision_current_stock_rolls_forward_from_current_stock():
+    rows = [
+        StandardSimulationRow(
             unique_id="A",
             ds="2024-01-01",
-            quantity=simulations["A"].snapshots[0].order_placed,
-            demand=simulations["A"].snapshots[0].demand,
-            forecast_quantity=None,
-            incoming_stock=simulations["A"].snapshots[0].received,
-            starting_on_hand=simulations["A"].snapshots[0].starting_on_hand,
-            ending_on_hand=simulations["A"].snapshots[0].ending_on_hand,
-            on_order=simulations["A"].snapshots[0].on_order,
-            backorders=simulations["A"].snapshots[0].backorders,
-            missed_sales=None,
-            sigma=1.5,
-            aggregation_window=1,
-            percentile_target="p95",
+            demand=4,
+            forecast=4,
+            actuals=None,
+            holding_cost_per_unit=0.5,
+            stockout_cost_per_unit=3.0,
+            order_cost_per_order=2.0,
+            lead_time=1,
+            initial_on_hand=5,
+            current_stock=20,
+            forecast_percentiles={"p50": 4},
+            is_forecast=True,
         ),
-        ReplenishmentDecisionRow(
+        StandardSimulationRow(
             unique_id="A",
             ds="2024-01-02",
-            quantity=simulations["A"].snapshots[1].order_placed,
-            demand=simulations["A"].snapshots[1].demand,
-            forecast_quantity=None,
-            incoming_stock=simulations["A"].snapshots[1].received,
-            starting_on_hand=simulations["A"].snapshots[1].starting_on_hand,
-            ending_on_hand=simulations["A"].snapshots[1].ending_on_hand,
-            on_order=simulations["A"].snapshots[1].on_order,
-            backorders=simulations["A"].snapshots[1].backorders,
-            missed_sales=None,
-            sigma=1.5,
-            aggregation_window=1,
-            percentile_target="p95",
+            demand=4,
+            forecast=4,
+            actuals=None,
+            holding_cost_per_unit=0.5,
+            stockout_cost_per_unit=3.0,
+            order_cost_per_order=2.0,
+            lead_time=1,
+            initial_on_hand=5,
+            current_stock=20,
+            forecast_percentiles={"p50": 4},
+            is_forecast=True,
         ),
     ]
+
+    configs = build_point_forecast_article_configs_from_standard_rows(
+        rows,
+        service_level_factor=0.0,
+    )
+    simulations = simulate_replenishment_for_articles(configs)
+
+    decisions = build_replenishment_decisions_from_simulations(
+        rows,
+        simulations,
+    )
+
+    assert decisions[0].current_stock == 16
+    assert decisions[1].current_stock == 16
 
 
 def test_standard_simulation_rows_from_dataframe_history_and_cutoff():
