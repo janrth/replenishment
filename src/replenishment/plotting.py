@@ -706,4 +706,4 @@ def plot_replenishment_decisions(
         max_share = float(loss_share.max()) if not loss_share.empty else 0.0
         ax_share.set_ylim(0, max(1.0, max_share * 1.1))
         ax_share.legend()
-    return ax
+    return ax_main

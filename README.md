@@ -197,6 +197,62 @@ percentile_configs = build_percentile_forecast_candidates(
 percentile_result = optimize_forecast_targets(percentile_configs)
 ```
 
+## Mean forecast + safety stock (example + plot)
+
+This example optimizes the safety stock factor (service level) on a backtest
+window, then applies the learned policy to the evaluation horizon and plots one
+article.
+
+```python
+from replenishment import (
+    generate_standard_simulation_rows,
+    optimize_point_forecast_policy_and_simulate_actuals,
+    replenishment_decision_rows_to_dataframe,
+    split_standard_simulation_rows,
+    standard_simulation_rows_to_dataframe,
+)
+from replenishment.plotting import plot_replenishment_decisions
+
+rows = generate_standard_simulation_rows(
+    n_unique_ids=1,
+    periods=18,
+    start_date="2031-01-01",
+    frequency_days=30,
+    forecast_start_period=10,
+    history_mean=52,
+    history_std=6,
+    forecast_mean=48,
+    forecast_std=5,
+    lead_time=2,
+    initial_on_hand=30,
+    current_stock=30,
+    seed=7,
+)
+backtest_rows, eval_rows = split_standard_simulation_rows(rows)
+
+optimized, _, decision_rows = optimize_point_forecast_policy_and_simulate_actuals(
+    backtest_rows,
+    eval_rows,
+    candidate_factors=[0.8, 0.9, 1.0],
+)
+
+rows_df = standard_simulation_rows_to_dataframe(rows, library="pandas")
+decision_df = replenishment_decision_rows_to_dataframe(
+    decision_rows, library="pandas"
+)
+
+example_id = decision_df["unique_id"].iloc[0]
+plot_replenishment_decisions(
+    rows_df,
+    decision_df,
+    unique_id=example_id,
+    title="Mean forecast + safety stock (optimized)",
+    decision_style="line",
+)
+```
+
+![Mean forecast + safety stock example](docs/plots/mean_forecast_safety_stock.png)
+
 ## Standard simulation input schema
 
 When you want a single file that powers both point-forecast and percentile-forecast
