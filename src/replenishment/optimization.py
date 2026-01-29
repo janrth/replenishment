@@ -17,7 +17,51 @@ from .policies import (
     PercentileForecastOptimizationPolicy,
     PointForecastOptimizationPolicy,
 )
-from .simulation import ArticleSimulationConfig, DemandModel, SimulationResult, simulate_replenishment
+from .simulation import (
+    ArticleSimulationConfig,
+    DemandModel,
+    SimulationMetadata,
+    SimulationResult,
+    simulate_replenishment,
+)
+
+
+def _attach_metadata(
+    simulation: SimulationResult,
+    *,
+    service_level_factor: float | None = None,
+    aggregation_window: int | None = None,
+    percentile_target: float | str | None = None,
+) -> SimulationResult:
+    base = simulation.metadata
+    metadata = SimulationMetadata(
+        service_level_factor=(
+            service_level_factor
+            if service_level_factor is not None
+            else base.service_level_factor
+            if base is not None
+            else None
+        ),
+        aggregation_window=(
+            aggregation_window
+            if aggregation_window is not None
+            else base.aggregation_window
+            if base is not None
+            else None
+        ),
+        percentile_target=(
+            percentile_target
+            if percentile_target is not None
+            else base.percentile_target
+            if base is not None
+            else None
+        ),
+    )
+    return SimulationResult(
+        snapshots=simulation.snapshots,
+        summary=simulation.summary,
+        metadata=metadata,
+    )
 
 
 @dataclass(frozen=True)
@@ -123,6 +167,9 @@ def optimize_service_level_factors(
                 order_cost_per_order=config.order_cost_per_order,
                 order_cost_per_unit=config.order_cost_per_unit,
             )
+            simulation = _attach_metadata(
+                simulation, service_level_factor=factor
+            )
             if best_result is None:
                 best_result = PointForecastOptimizationResult(
                     service_level_factor=factor,
@@ -184,6 +231,9 @@ def optimize_forecast_targets(
                 order_cost_per_order=config.order_cost_per_order,
                 order_cost_per_unit=config.order_cost_per_unit,
             )
+            simulation = _attach_metadata(
+                simulation, percentile_target=target
+            )
             if best_result is None:
                 best_result = PercentileForecastOptimizationResult(
                     target=target,
@@ -200,6 +250,253 @@ def optimize_forecast_targets(
         if best_result is None:
             raise RuntimeError("No optimization result computed.")
         results[article_id] = best_result
+    return results
+
+
+def evaluate_forecast_target_costs(
+    articles: Mapping[str, ForecastCandidatesConfig],
+    candidate_targets: Iterable[float | str] | None = None,
+) -> dict[str, dict[float | str, float]]:
+    """Return total costs for each forecast candidate per article."""
+    results: dict[str, dict[float | str, float]] = {}
+    for article_id, config in articles.items():
+        if not config.forecast_candidates:
+            raise ValueError("Forecast candidates must be provided.")
+        targets = (
+            list(candidate_targets)
+            if candidate_targets is not None
+            else list(config.forecast_candidates.keys())
+        )
+        if not targets:
+            raise ValueError("Candidate targets must be provided.")
+
+        target_costs: dict[float | str, float] = {}
+        for target in targets:
+            if target not in config.forecast_candidates:
+                raise ValueError(f"Unknown forecast target: {target}")
+            candidate_policy = PercentileForecastOptimizationPolicy(
+                forecast=config.forecast_candidates[target],
+                lead_time=config.lead_time,
+            )
+            simulation = simulate_replenishment(
+                periods=config.periods,
+                demand=config.demand,
+                initial_on_hand=config.initial_on_hand,
+                lead_time=config.lead_time,
+                policy=candidate_policy,
+                holding_cost_per_unit=config.holding_cost_per_unit,
+                stockout_cost_per_unit=config.stockout_cost_per_unit,
+                order_cost_per_order=config.order_cost_per_order,
+                order_cost_per_unit=config.order_cost_per_unit,
+            )
+            target_costs[target] = simulation.summary.total_cost
+        results[article_id] = target_costs
+    return results
+
+
+def evaluate_service_level_factor_costs(
+    articles: Mapping[str, ArticleSimulationConfig],
+    candidate_factors: Iterable[float],
+) -> dict[str, dict[float, float]]:
+    """Return total costs for each service-level factor per article."""
+    factors = list(candidate_factors)
+    if not factors:
+        raise ValueError("Candidate factors must be provided.")
+    if any(factor < 0 for factor in factors):
+        raise ValueError("Service level factors must be non-negative.")
+
+    results: dict[str, dict[float, float]] = {}
+    for article_id, config in articles.items():
+        policy = config.policy
+        if not isinstance(
+            policy, (ForecastBasedPolicy, PointForecastOptimizationPolicy)
+        ):
+            raise TypeError(
+                "Service-level cost evaluation requires point-forecast policies."
+            )
+        factor_costs: dict[float, float] = {}
+        for factor in factors:
+            candidate_policy = PointForecastOptimizationPolicy(
+                forecast=policy.forecast,
+                actuals=policy.actuals,
+                lead_time=config.lead_time,
+                service_level_factor=factor,
+            )
+            simulation = simulate_replenishment(
+                periods=config.periods,
+                demand=config.demand,
+                initial_on_hand=config.initial_on_hand,
+                lead_time=config.lead_time,
+                policy=candidate_policy,
+                holding_cost_per_unit=config.holding_cost_per_unit,
+                stockout_cost_per_unit=config.stockout_cost_per_unit,
+                order_cost_per_order=config.order_cost_per_order,
+                order_cost_per_unit=config.order_cost_per_unit,
+            )
+            factor_costs[factor] = simulation.summary.total_cost
+        results[article_id] = factor_costs
+    return results
+
+
+def evaluate_aggregation_and_service_level_factor_costs(
+    articles: Mapping[str, ArticleSimulationConfig],
+    candidate_windows: Iterable[int],
+    candidate_factors: Iterable[float],
+) -> dict[str, dict[int, dict[float, float]]]:
+    """Return total costs for each window and service-level factor per article."""
+    windows = list(candidate_windows)
+    if not windows:
+        raise ValueError("Aggregation windows must be provided.")
+    if any(window <= 0 for window in windows):
+        raise ValueError("Aggregation windows must be positive.")
+
+    factors = list(candidate_factors)
+    if not factors:
+        raise ValueError("Candidate factors must be provided.")
+    if any(factor < 0 for factor in factors):
+        raise ValueError("Service level factors must be non-negative.")
+
+    results: dict[str, dict[int, dict[float, float]]] = {}
+    for article_id, config in articles.items():
+        policy = config.policy
+        if not isinstance(
+            policy, (ForecastBasedPolicy, PointForecastOptimizationPolicy)
+        ):
+            raise TypeError(
+                "Aggregation with service-level costs requires point-forecast policies."
+            )
+        window_costs: dict[int, dict[float, float]] = {}
+        for window in windows:
+            aggregated_forecast = aggregate_series(
+                policy.forecast,
+                periods=config.periods,
+                window=window,
+                extend_last=True,
+            )
+            if callable(policy.actuals):
+                aggregated_actuals = aggregate_series(
+                    policy.actuals,
+                    periods=config.periods,
+                    window=window,
+                    extend_last=False,
+                )
+            else:
+                actual_values = list(policy.actuals)
+                if not actual_values:
+                    aggregated_actuals = []
+                else:
+                    actual_periods = min(config.periods, len(actual_values))
+                    aggregated_actuals = aggregate_series(
+                        actual_values,
+                        periods=actual_periods,
+                        window=window,
+                        extend_last=False,
+                    )
+            aggregated_demand = aggregate_series(
+                config.demand,
+                periods=config.periods,
+                window=window,
+                extend_last=False,
+            )
+            aggregated_periods = aggregate_periods(config.periods, window)
+            aggregated_lead_time = aggregate_lead_time(config.lead_time, window)
+
+            factor_costs: dict[float, float] = {}
+            for factor in factors:
+                candidate_policy = PointForecastOptimizationPolicy(
+                    forecast=aggregated_forecast,
+                    actuals=aggregated_actuals,
+                    lead_time=aggregated_lead_time,
+                    service_level_factor=factor,
+                )
+                simulation = simulate_replenishment(
+                    periods=aggregated_periods,
+                    demand=aggregated_demand,
+                    initial_on_hand=config.initial_on_hand,
+                    lead_time=aggregated_lead_time,
+                    policy=candidate_policy,
+                    holding_cost_per_unit=config.holding_cost_per_unit,
+                    stockout_cost_per_unit=config.stockout_cost_per_unit,
+                    order_cost_per_order=config.order_cost_per_order,
+                    order_cost_per_unit=config.order_cost_per_unit,
+                )
+                factor_costs[factor] = simulation.summary.total_cost
+            window_costs[window] = factor_costs
+        results[article_id] = window_costs
+    return results
+
+
+def evaluate_aggregation_and_forecast_target_costs(
+    articles: Mapping[str, ForecastCandidatesConfig],
+    candidate_windows: Iterable[int],
+    candidate_targets: Iterable[float | str] | None = None,
+) -> dict[str, dict[int, dict[float | str, float]]]:
+    """Return total costs for each window and forecast target per article."""
+    windows = list(candidate_windows)
+    if not windows:
+        raise ValueError("Aggregation windows must be provided.")
+    if any(window <= 0 for window in windows):
+        raise ValueError("Aggregation windows must be positive.")
+
+    target_candidates = list(candidate_targets) if candidate_targets is not None else None
+    results: dict[str, dict[int, dict[float | str, float]]] = {}
+    for article_id, config in articles.items():
+        if not config.forecast_candidates:
+            raise ValueError("Forecast candidates must be provided.")
+        candidate_series = {
+            target: list(series) if not callable(series) else series
+            for target, series in config.forecast_candidates.items()
+        }
+        targets = (
+            list(target_candidates)
+            if target_candidates is not None
+            else list(candidate_series.keys())
+        )
+        if not targets:
+            raise ValueError("Candidate targets must be provided.")
+
+        window_costs: dict[int, dict[float | str, float]] = {}
+        for window in windows:
+            aggregated_periods = aggregate_periods(config.periods, window)
+            aggregated_lead_time = aggregate_lead_time(config.lead_time, window)
+            aggregated_demand = aggregate_series(
+                config.demand,
+                periods=config.periods,
+                window=window,
+                extend_last=False,
+            )
+            aggregated_candidates = {
+                target: aggregate_series(
+                    forecast,
+                    periods=config.periods,
+                    window=window,
+                    extend_last=True,
+                )
+                for target, forecast in candidate_series.items()
+            }
+
+            target_costs: dict[float | str, float] = {}
+            for target in targets:
+                if target not in aggregated_candidates:
+                    raise ValueError(f"Unknown forecast target: {target}")
+                candidate_policy = PercentileForecastOptimizationPolicy(
+                    forecast=aggregated_candidates[target],
+                    lead_time=aggregated_lead_time,
+                )
+                simulation = simulate_replenishment(
+                    periods=aggregated_periods,
+                    demand=aggregated_demand,
+                    initial_on_hand=config.initial_on_hand,
+                    lead_time=aggregated_lead_time,
+                    policy=candidate_policy,
+                    holding_cost_per_unit=config.holding_cost_per_unit,
+                    stockout_cost_per_unit=config.stockout_cost_per_unit,
+                    order_cost_per_order=config.order_cost_per_order,
+                    order_cost_per_unit=config.order_cost_per_unit,
+                )
+                target_costs[target] = simulation.summary.total_cost
+            window_costs[window] = target_costs
+        results[article_id] = window_costs
     return results
 
 
@@ -250,6 +547,9 @@ def optimize_aggregation_windows(
                 stockout_cost_per_unit=config.stockout_cost_per_unit,
                 order_cost_per_order=config.order_cost_per_order,
                 order_cost_per_unit=config.order_cost_per_unit,
+            )
+            simulation = _attach_metadata(
+                simulation, aggregation_window=window
             )
             candidate = AggregationWindowOptimizationResult(
                 window=window,
@@ -359,6 +659,11 @@ def optimize_aggregation_and_service_level_factors(
                     order_cost_per_order=config.order_cost_per_order,
                     order_cost_per_unit=config.order_cost_per_unit,
                 )
+                simulation = _attach_metadata(
+                    simulation,
+                    service_level_factor=factor,
+                    aggregation_window=window,
+                )
                 candidate = AggregationServiceLevelOptimizationResult(
                     window=window,
                     service_level_factor=factor,
@@ -447,6 +752,11 @@ def optimize_aggregation_and_forecast_targets(
                     stockout_cost_per_unit=config.stockout_cost_per_unit,
                     order_cost_per_order=config.order_cost_per_order,
                     order_cost_per_unit=config.order_cost_per_unit,
+                )
+                simulation = _attach_metadata(
+                    simulation,
+                    aggregation_window=window,
+                    percentile_target=target,
                 )
                 candidate = AggregationForecastTargetOptimizationResult(
                     window=window,

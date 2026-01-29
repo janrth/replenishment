@@ -188,6 +188,92 @@ def test_build_configs_from_standard_rows():
     assert set(percentile_configs["A"].forecast_candidates.keys()) == {"p50", "p90"}
 
 
+def test_build_percentile_candidates_include_mean():
+    rows = [
+        StandardSimulationRow(
+            unique_id="A",
+            ds="2024-01-01",
+            demand=10,
+            forecast=12,
+            actuals=11,
+            holding_cost_per_unit=0.5,
+            stockout_cost_per_unit=3.0,
+            order_cost_per_order=2.0,
+            lead_time=1,
+            initial_on_hand=5,
+            current_stock=8,
+            forecast_percentiles={"p50": 11},
+        ),
+        StandardSimulationRow(
+            unique_id="A",
+            ds="2024-01-02",
+            demand=9,
+            forecast=10,
+            actuals=9,
+            holding_cost_per_unit=0.5,
+            stockout_cost_per_unit=3.0,
+            order_cost_per_order=2.0,
+            lead_time=1,
+            initial_on_hand=5,
+            current_stock=8,
+            forecast_percentiles={"p50": 10},
+        ),
+    ]
+
+    configs = build_percentile_forecast_candidates_from_standard_rows(
+        rows, include_mean=True
+    )
+
+    assert set(configs["A"].forecast_candidates.keys()) == {"p50", "mean"}
+
+
+def test_build_configs_use_current_stock_for_forecast_rows():
+    rows = [
+        StandardSimulationRow(
+            unique_id="A",
+            ds="2024-01-01",
+            demand=10,
+            forecast=12,
+            actuals=None,
+            holding_cost_per_unit=0.5,
+            stockout_cost_per_unit=3.0,
+            order_cost_per_order=2.0,
+            lead_time=1,
+            initial_on_hand=5,
+            current_stock=12,
+            forecast_percentiles={"p50": 11},
+            is_forecast=True,
+        ),
+        StandardSimulationRow(
+            unique_id="A",
+            ds="2024-01-02",
+            demand=9,
+            forecast=10,
+            actuals=None,
+            holding_cost_per_unit=0.5,
+            stockout_cost_per_unit=3.0,
+            order_cost_per_order=2.0,
+            lead_time=1,
+            initial_on_hand=5,
+            current_stock=12,
+            forecast_percentiles={"p50": 10},
+            is_forecast=True,
+        ),
+    ]
+
+    point_configs = build_point_forecast_article_configs_from_standard_rows(
+        rows,
+        service_level_factor=0.9,
+    )
+    percentile_configs = build_percentile_forecast_candidates_from_standard_rows(
+        rows,
+        include_mean=True,
+    )
+
+    assert point_configs["A"].initial_on_hand == 12
+    assert percentile_configs["A"].initial_on_hand == 12
+
+
 def test_generate_standard_simulation_rows_masks_actuals_after_forecast():
     rows = generate_standard_simulation_rows(
         n_unique_ids=1,
@@ -288,20 +374,29 @@ def test_build_replenishment_decisions_from_simulations():
     )
 
     snapshots = simulation.snapshots
-    expected = [
-        ReplenishmentDecisionRow(
-            unique_id="A",
-            ds="2024-01-01",
-            quantity=snapshots[0].order_placed,
-            aggregation_window=2,
-        ),
-        ReplenishmentDecisionRow(
-            unique_id="A",
-            ds="2024-01-03",
-            quantity=snapshots[1].order_placed,
-            aggregation_window=2,
-        ),
-    ]
+    forecast_values = [row.forecast for row in rows]
+    expected = []
+    for index, snapshot in enumerate(snapshots):
+        start = index * 2
+        end = min(start + 2, len(forecast_values))
+        expected.append(
+            ReplenishmentDecisionRow(
+                unique_id="A",
+                ds=rows[start].ds,
+                quantity=snapshot.order_placed,
+                demand=snapshot.demand,
+                forecast_quantity=sum(forecast_values[start:end]),
+                incoming_stock=snapshot.received,
+                starting_on_hand=snapshot.starting_on_hand,
+                ending_on_hand=snapshot.ending_on_hand,
+                on_order=snapshot.on_order,
+                backorders=snapshot.backorders,
+                missed_sales=max(
+                    0, sum(forecast_values[start:end]) - snapshot.starting_on_hand
+                ),
+                aggregation_window=2,
+            )
+        )
 
     assert decisions == expected
 
@@ -368,11 +463,28 @@ def test_build_replenishment_decisions_from_optimization_results():
 
     simulation = optimization_results["A"].simulation
     window = optimization_results["A"].window
+    forecast_values = [row.forecast for row in rows]
     expected = [
         ReplenishmentDecisionRow(
             unique_id="A",
             ds=rows[index * window].ds,
             quantity=snapshot.order_placed,
+            demand=snapshot.demand,
+            forecast_quantity=sum(
+                forecast_values[index * window : index * window + window]
+            ),
+            incoming_stock=snapshot.received,
+            starting_on_hand=snapshot.starting_on_hand,
+            ending_on_hand=snapshot.ending_on_hand,
+            on_order=snapshot.on_order,
+            backorders=snapshot.backorders,
+            missed_sales=max(
+                0,
+                sum(
+                    forecast_values[index * window : index * window + window]
+                )
+                - snapshot.starting_on_hand,
+            ),
             aggregation_window=window,
         )
         for index, snapshot in enumerate(simulation.snapshots)
@@ -431,6 +543,14 @@ def test_build_replenishment_decisions_from_simulations_with_metadata_inputs():
             unique_id="A",
             ds="2024-01-01",
             quantity=simulations["A"].snapshots[0].order_placed,
+            demand=simulations["A"].snapshots[0].demand,
+            forecast_quantity=None,
+            incoming_stock=simulations["A"].snapshots[0].received,
+            starting_on_hand=simulations["A"].snapshots[0].starting_on_hand,
+            ending_on_hand=simulations["A"].snapshots[0].ending_on_hand,
+            on_order=simulations["A"].snapshots[0].on_order,
+            backorders=simulations["A"].snapshots[0].backorders,
+            missed_sales=None,
             sigma=1.25,
             aggregation_window=1,
             percentile_target="p90",
@@ -439,6 +559,14 @@ def test_build_replenishment_decisions_from_simulations_with_metadata_inputs():
             unique_id="A",
             ds="2024-01-02",
             quantity=simulations["A"].snapshots[1].order_placed,
+            demand=simulations["A"].snapshots[1].demand,
+            forecast_quantity=None,
+            incoming_stock=simulations["A"].snapshots[1].received,
+            starting_on_hand=simulations["A"].snapshots[1].starting_on_hand,
+            ending_on_hand=simulations["A"].snapshots[1].ending_on_hand,
+            on_order=simulations["A"].snapshots[1].on_order,
+            backorders=simulations["A"].snapshots[1].backorders,
+            missed_sales=None,
             sigma=1.25,
             aggregation_window=1,
             percentile_target="p90",
@@ -498,6 +626,14 @@ def test_build_replenishment_decisions_from_simulations_merges_metadata():
             unique_id="A",
             ds="2024-01-01",
             quantity=simulations["A"].snapshots[0].order_placed,
+            demand=simulations["A"].snapshots[0].demand,
+            forecast_quantity=None,
+            incoming_stock=simulations["A"].snapshots[0].received,
+            starting_on_hand=simulations["A"].snapshots[0].starting_on_hand,
+            ending_on_hand=simulations["A"].snapshots[0].ending_on_hand,
+            on_order=simulations["A"].snapshots[0].on_order,
+            backorders=simulations["A"].snapshots[0].backorders,
+            missed_sales=None,
             sigma=1.5,
             aggregation_window=1,
             percentile_target="p95",
@@ -506,6 +642,14 @@ def test_build_replenishment_decisions_from_simulations_merges_metadata():
             unique_id="A",
             ds="2024-01-02",
             quantity=simulations["A"].snapshots[1].order_placed,
+            demand=simulations["A"].snapshots[1].demand,
+            forecast_quantity=None,
+            incoming_stock=simulations["A"].snapshots[1].received,
+            starting_on_hand=simulations["A"].snapshots[1].starting_on_hand,
+            ending_on_hand=simulations["A"].snapshots[1].ending_on_hand,
+            on_order=simulations["A"].snapshots[1].on_order,
+            backorders=simulations["A"].snapshots[1].backorders,
+            missed_sales=None,
             sigma=1.5,
             aggregation_window=1,
             percentile_target="p95",

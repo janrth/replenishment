@@ -11,7 +11,7 @@ from .policies import (
     PercentileForecastOptimizationPolicy,
     PointForecastOptimizationPolicy,
 )
-from .simulation import DemandModel, OrderingPolicy
+from .simulation import DemandModel, OrderingPolicy, SimulationMetadata, SimulationResult
 
 
 def aggregate_periods(periods: int, window: int) -> int:
@@ -143,7 +143,7 @@ def simulate_replenishment_with_aggregation(
     aggregated_periods = aggregate_periods(periods, aggregation_window)
     aggregated_lead_time = aggregate_lead_time(lead_time, aggregation_window)
 
-    return simulate_replenishment(
+    simulation = simulate_replenishment(
         periods=aggregated_periods,
         demand=aggregated_demand,
         initial_on_hand=initial_on_hand,
@@ -153,4 +153,17 @@ def simulate_replenishment_with_aggregation(
         stockout_cost_per_unit=stockout_cost_per_unit,
         order_cost_per_order=order_cost_per_order,
         order_cost_per_unit=order_cost_per_unit,
+    )
+    service_level_factor = (
+        aggregated_policy.service_level_factor
+        if isinstance(aggregated_policy, PointForecastOptimizationPolicy)
+        else None
+    )
+    return SimulationResult(
+        snapshots=simulation.snapshots,
+        summary=simulation.summary,
+        metadata=SimulationMetadata(
+            service_level_factor=service_level_factor,
+            aggregation_window=aggregation_window,
+        ),
     )

@@ -53,9 +53,17 @@ class SimulationSummary:
 
 
 @dataclass(frozen=True)
+class SimulationMetadata:
+    service_level_factor: float | None = None
+    aggregation_window: int | None = None
+    percentile_target: float | str | None = None
+
+
+@dataclass(frozen=True)
 class SimulationResult:
     snapshots: Sequence[InventorySnapshot]
     summary: SimulationSummary
+    metadata: SimulationMetadata | None = None
 
 
 @dataclass(frozen=True)

@@ -64,6 +64,14 @@ class ReplenishmentDecisionRow:
     unique_id: str
     ds: str
     quantity: int
+    demand: int | None = None
+    forecast_quantity: int | None = None
+    incoming_stock: int | None = None
+    starting_on_hand: int | None = None
+    ending_on_hand: int | None = None
+    on_order: int | None = None
+    backorders: int | None = None
+    missed_sales: int | None = None
     sigma: float | None = None
     aggregation_window: int | None = None
     percentile_target: float | str | None = None
@@ -230,6 +238,14 @@ def replenishment_decision_rows_to_dicts(
             "unique_id": row.unique_id,
             "ds": row.ds,
             "quantity": row.quantity,
+            "demand": row.demand,
+            "forecast_quantity": row.forecast_quantity,
+            "incoming_stock": row.incoming_stock,
+            "starting_on_hand": row.starting_on_hand,
+            "ending_on_hand": row.ending_on_hand,
+            "on_order": row.on_order,
+            "backorders": row.backorders,
+            "missed_sales": row.missed_sales,
             "sigma": row.sigma,
             "aggregation_window": row.aggregation_window,
             "percentile_target": row.percentile_target,
@@ -267,7 +283,7 @@ def build_replenishment_decisions_from_simulations(
     rows,
     simulations: Mapping[str, SimulationResult],
     *,
-    aggregation_window: Mapping[str, int] | int = 1,
+    aggregation_window: Mapping[str, int] | int | None = None,
     sigma: Mapping[str, float] | float | None = None,
     percentile_target: Mapping[str, float | str] | float | str | None = None,
     decision_metadata: Mapping[str, ReplenishmentDecisionMetadata] | None = None,
@@ -281,7 +297,21 @@ def build_replenishment_decisions_from_simulations(
         if unique_id not in grouped:
             raise ValueError(f"Missing standard rows for unique_id '{unique_id}'.")
         ordered = _order_rows_by_ds(unique_id, grouped[unique_id])
-        window = _resolve_value(aggregation_window, unique_id, "aggregation_window")
+        if aggregation_window is None:
+            window = (
+                simulation.metadata.aggregation_window
+                if simulation.metadata is not None
+                and simulation.metadata.aggregation_window is not None
+                else 1
+            )
+        elif isinstance(aggregation_window, Mapping):
+            window = _resolve_value(
+                aggregation_window, unique_id, "aggregation_window"
+            )
+        elif isinstance(aggregation_window, int):
+            window = aggregation_window
+        else:
+            raise TypeError("aggregation_window must be an int or mapping of ints.")
         if not isinstance(window, int):
             raise TypeError("aggregation_window must be an int or mapping of ints.")
         if window <= 0:
@@ -293,9 +323,23 @@ def build_replenishment_decisions_from_simulations(
                 f"Aggregation window {window} is incompatible with ds length for unique_id '{unique_id}'."
             )
         sigma_value = _resolve_optional_value(sigma, unique_id, "sigma")
+        if sigma_value is None and simulation.metadata is not None:
+            sigma_value = simulation.metadata.service_level_factor
         target_value = _resolve_optional_value(
             percentile_target, unique_id, "percentile_target"
         )
+        if target_value is None and simulation.metadata is not None:
+            target_value = simulation.metadata.percentile_target
+        forecast_values: list[int] | None = None
+        if target_value is None or target_value == "mean":
+            forecast_values = [row.forecast for row in ordered]
+        else:
+            if all(
+                target_value in row.forecast_percentiles for row in ordered
+            ):
+                forecast_values = [
+                    row.forecast_percentiles[target_value] for row in ordered
+                ]
         metadata = metadata_lookup.get(unique_id)
         if metadata is None:
             metadata = ReplenishmentDecisionMetadata(
@@ -319,11 +363,31 @@ def build_replenishment_decisions_from_simulations(
             )
         for index, snapshot in enumerate(simulation.snapshots):
             ds = ds_values[index * window]
+            start = index * window
+            forecast_quantity = None
+            if forecast_values is not None:
+                end = min(start + window, len(forecast_values))
+                if start >= len(forecast_values):
+                    forecast_quantity = None
+                else:
+                    forecast_quantity = sum(forecast_values[start:end])
+            missed_sales = None
+            if forecast_quantity is not None:
+                available = snapshot.starting_on_hand
+                missed_sales = max(0, forecast_quantity - available)
             decisions.append(
                 ReplenishmentDecisionRow(
                     unique_id=unique_id,
                     ds=ds,
                     quantity=snapshot.order_placed,
+                    demand=snapshot.demand,
+                    forecast_quantity=forecast_quantity,
+                    incoming_stock=snapshot.received,
+                    starting_on_hand=snapshot.starting_on_hand,
+                    ending_on_hand=snapshot.ending_on_hand,
+                    on_order=snapshot.on_order,
+                    backorders=snapshot.backorders,
+                    missed_sales=missed_sales,
                     sigma=metadata.sigma,
                     aggregation_window=metadata.aggregation_window,
                     percentile_target=metadata.percentile_target,
@@ -854,6 +918,7 @@ def build_point_forecast_article_configs_from_standard_rows(
     rows: Iterable[StandardSimulationRow],
     *,
     service_level_factor: Mapping[str, float] | float,
+    use_current_stock: bool | None = None,
 ) -> dict[str, ArticleSimulationConfig]:
     grouped = _group_standard_rows(rows)
     configs: dict[str, ArticleSimulationConfig] = {}
@@ -861,6 +926,12 @@ def build_point_forecast_article_configs_from_standard_rows(
         ordered = _order_rows_by_ds(unique_id, ds_rows)
         lead_time = _ensure_constant(unique_id, ordered, "lead_time")
         initial_on_hand = _ensure_constant(unique_id, ordered, "initial_on_hand")
+        current_stock = _ensure_constant(unique_id, ordered, "current_stock")
+        if use_current_stock is None:
+            use_current = all(row.is_forecast for row in ordered)
+        else:
+            use_current = use_current_stock
+        starting_stock = current_stock if use_current else initial_on_hand
         holding_cost = _ensure_constant(unique_id, ordered, "holding_cost_per_unit")
         stockout_cost = _ensure_constant(unique_id, ordered, "stockout_cost_per_unit")
         order_cost = _ensure_constant(unique_id, ordered, "order_cost_per_order")
@@ -878,7 +949,7 @@ def build_point_forecast_article_configs_from_standard_rows(
         configs[unique_id] = ArticleSimulationConfig(
             periods=len(ordered),
             demand=demand,
-            initial_on_hand=initial_on_hand,
+            initial_on_hand=starting_stock,
             lead_time=lead_time,
             policy=policy,
             holding_cost_per_unit=holding_cost,
@@ -890,6 +961,9 @@ def build_point_forecast_article_configs_from_standard_rows(
 
 def build_percentile_forecast_candidates_from_standard_rows(
     rows: Iterable[StandardSimulationRow],
+    *,
+    include_mean: bool = False,
+    use_current_stock: bool | None = None,
 ) -> dict[str, ForecastCandidatesConfig]:
     grouped = _group_standard_rows(rows)
     configs: dict[str, ForecastCandidatesConfig] = {}
@@ -897,6 +971,12 @@ def build_percentile_forecast_candidates_from_standard_rows(
         ordered = _order_rows_by_ds(unique_id, ds_rows)
         lead_time = _ensure_constant(unique_id, ordered, "lead_time")
         initial_on_hand = _ensure_constant(unique_id, ordered, "initial_on_hand")
+        current_stock = _ensure_constant(unique_id, ordered, "current_stock")
+        if use_current_stock is None:
+            use_current = all(row.is_forecast for row in ordered)
+        else:
+            use_current = use_current_stock
+        starting_stock = current_stock if use_current else initial_on_hand
         holding_cost = _ensure_constant(unique_id, ordered, "holding_cost_per_unit")
         stockout_cost = _ensure_constant(unique_id, ordered, "stockout_cost_per_unit")
         order_cost = _ensure_constant(unique_id, ordered, "order_cost_per_order")
@@ -906,10 +986,12 @@ def build_percentile_forecast_candidates_from_standard_rows(
             target: [row.forecast_percentiles[target] for row in ordered]
             for target in targets
         }
+        if include_mean and "mean" not in candidate_series:
+            candidate_series["mean"] = [row.forecast for row in ordered]
         configs[unique_id] = ForecastCandidatesConfig(
             periods=len(ordered),
             demand=demand,
-            initial_on_hand=initial_on_hand,
+            initial_on_hand=starting_stock,
             lead_time=lead_time,
             forecast_candidates=candidate_series,
             holding_cost_per_unit=holding_cost,
