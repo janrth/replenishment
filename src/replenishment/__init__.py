@@ -18,6 +18,10 @@ from .optimization import (
     PercentileForecastOptimizationResult,
     PointForecastOptimizationResult,
     ServiceLevelOptimizationResult,
+    evaluate_aggregation_and_forecast_target_costs,
+    evaluate_aggregation_and_service_level_factor_costs,
+    evaluate_forecast_target_costs,
+    evaluate_service_level_factor_costs,
     optimize_aggregation_and_forecast_targets,
     optimize_aggregation_and_service_level_factors,
     optimize_aggregation_windows,
@@ -34,6 +38,7 @@ from .io import (
     build_percentile_forecast_candidates_from_standard_rows,
     build_point_forecast_article_configs,
     build_point_forecast_article_configs_from_standard_rows,
+    optimize_point_forecast_policy_and_simulate_actuals,
     build_replenishment_decisions_from_optimization_results,
     build_replenishment_decisions_from_simulations,
     generate_standard_simulation_rows,
@@ -53,12 +58,18 @@ from .simulation import (
     ArticleSimulationConfig,
     DemandModel,
     InventoryState,
+    SimulationMetadata,
     SimulationResult,
     SimulationSummary,
     simulate_replenishment,
     simulate_replenishment_for_articles,
 )
-from .plotting import plot_replenishment_decisions
+try:
+    from .plotting import plot_replenishment_decisions
+    _HAS_PLOTTING = True
+except ModuleNotFoundError:
+    plot_replenishment_decisions = None
+    _HAS_PLOTTING = False
 
 __all__ = [
     "DemandModel",
@@ -70,6 +81,7 @@ __all__ = [
     "PercentileForecastOptimizationPolicy",
     "PointForecastOptimizationPolicy",
     "ReorderPointPolicy",
+    "SimulationMetadata",
     "SimulationResult",
     "SimulationSummary",
     "ForecastCandidatesConfig",
@@ -98,18 +110,25 @@ __all__ = [
     "build_point_forecast_article_configs",
     "build_percentile_forecast_candidates",
     "build_point_forecast_article_configs_from_standard_rows",
+    "optimize_point_forecast_policy_and_simulate_actuals",
     "build_percentile_forecast_candidates_from_standard_rows",
     "build_replenishment_decisions_from_simulations",
     "build_replenishment_decisions_from_optimization_results",
     "simulate_replenishment",
     "simulate_replenishment_with_aggregation",
     "simulate_replenishment_for_articles",
-    "plot_replenishment_decisions",
     "optimize_aggregation_and_forecast_targets",
     "optimize_aggregation_and_service_level_factors",
     "optimize_aggregation_windows",
+    "evaluate_forecast_target_costs",
+    "evaluate_service_level_factor_costs",
+    "evaluate_aggregation_and_forecast_target_costs",
+    "evaluate_aggregation_and_service_level_factor_costs",
     "optimize_forecast_targets",
     "optimize_service_level_factors",
     "percentile_forecast_optimisation",
     "point_forecast_optimisation",
 ]
+
+if _HAS_PLOTTING:
+    __all__.append("plot_replenishment_decisions")

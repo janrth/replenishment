@@ -12,6 +12,7 @@ import random
 import string
 import warnings
 
+from .aggregation import aggregate_lead_time, aggregate_series
 from .optimization import (
     AggregationForecastTargetOptimizationResult,
     AggregationServiceLevelOptimizationResult,
@@ -19,9 +20,14 @@ from .optimization import (
     ForecastCandidatesConfig,
     PercentileForecastOptimizationResult,
     PointForecastOptimizationResult,
+    optimize_service_level_factors,
 )
 from .policies import PointForecastOptimizationPolicy
-from .simulation import ArticleSimulationConfig, SimulationResult
+from .simulation import (
+    ArticleSimulationConfig,
+    SimulationResult,
+    simulate_replenishment_for_articles,
+)
 
 
 @dataclass(frozen=True)
@@ -64,6 +70,18 @@ class ReplenishmentDecisionRow:
     unique_id: str
     ds: str
     quantity: int
+    demand: int | None = None
+    forecast_quantity: int | None = None
+    incoming_stock: int | None = None
+    starting_stock: int | None = None
+    ending_stock: int | None = None
+    safety_stock: float | None = None
+    starting_on_hand: int | None = None
+    ending_on_hand: int | None = None
+    current_stock: int | None = None
+    on_order: int | None = None
+    backorders: int | None = None
+    missed_sales: int | None = None
     sigma: float | None = None
     aggregation_window: int | None = None
     percentile_target: float | str | None = None
@@ -230,6 +248,18 @@ def replenishment_decision_rows_to_dicts(
             "unique_id": row.unique_id,
             "ds": row.ds,
             "quantity": row.quantity,
+            "demand": row.demand,
+            "forecast_quantity": row.forecast_quantity,
+            "incoming_stock": row.incoming_stock,
+            "starting_stock": row.starting_stock,
+            "ending_stock": row.ending_stock,
+            "safety_stock": row.safety_stock,
+            "starting_on_hand": row.starting_on_hand,
+            "ending_on_hand": row.ending_on_hand,
+            "current_stock": row.current_stock,
+            "on_order": row.on_order,
+            "backorders": row.backorders,
+            "missed_sales": row.missed_sales,
             "sigma": row.sigma,
             "aggregation_window": row.aggregation_window,
             "percentile_target": row.percentile_target,
@@ -267,7 +297,7 @@ def build_replenishment_decisions_from_simulations(
     rows,
     simulations: Mapping[str, SimulationResult],
     *,
-    aggregation_window: Mapping[str, int] | int = 1,
+    aggregation_window: Mapping[str, int] | int | None = None,
     sigma: Mapping[str, float] | float | None = None,
     percentile_target: Mapping[str, float | str] | float | str | None = None,
     decision_metadata: Mapping[str, ReplenishmentDecisionMetadata] | None = None,
@@ -281,7 +311,22 @@ def build_replenishment_decisions_from_simulations(
         if unique_id not in grouped:
             raise ValueError(f"Missing standard rows for unique_id '{unique_id}'.")
         ordered = _order_rows_by_ds(unique_id, grouped[unique_id])
-        window = _resolve_value(aggregation_window, unique_id, "aggregation_window")
+        lead_time = _ensure_constant(unique_id, ordered, "lead_time")
+        if aggregation_window is None:
+            window = (
+                simulation.metadata.aggregation_window
+                if simulation.metadata is not None
+                and simulation.metadata.aggregation_window is not None
+                else 1
+            )
+        elif isinstance(aggregation_window, Mapping):
+            window = _resolve_value(
+                aggregation_window, unique_id, "aggregation_window"
+            )
+        elif isinstance(aggregation_window, int):
+            window = aggregation_window
+        else:
+            raise TypeError("aggregation_window must be an int or mapping of ints.")
         if not isinstance(window, int):
             raise TypeError("aggregation_window must be an int or mapping of ints.")
         if window <= 0:
@@ -293,9 +338,23 @@ def build_replenishment_decisions_from_simulations(
                 f"Aggregation window {window} is incompatible with ds length for unique_id '{unique_id}'."
             )
         sigma_value = _resolve_optional_value(sigma, unique_id, "sigma")
+        if sigma_value is None and simulation.metadata is not None:
+            sigma_value = simulation.metadata.service_level_factor
         target_value = _resolve_optional_value(
             percentile_target, unique_id, "percentile_target"
         )
+        if target_value is None and simulation.metadata is not None:
+            target_value = simulation.metadata.percentile_target
+        forecast_values: list[int] | None = None
+        if target_value is None or target_value == "mean":
+            forecast_values = [row.forecast for row in ordered]
+        else:
+            if all(
+                target_value in row.forecast_percentiles for row in ordered
+            ):
+                forecast_values = [
+                    row.forecast_percentiles[target_value] for row in ordered
+                ]
         metadata = metadata_lookup.get(unique_id)
         if metadata is None:
             metadata = ReplenishmentDecisionMetadata(
@@ -317,13 +376,64 @@ def build_replenishment_decisions_from_simulations(
                     else target_value
                 ),
             )
+        safety_stock_values: list[float] | None = None
+        if sigma_value is not None:
+            forecast_series = [row.forecast for row in ordered]
+            actuals_series = _trim_actuals_series(unique_id, ordered)
+            safety_stock_values = _safety_stock_by_period(
+                forecast_values=forecast_series,
+                actuals_values=actuals_series,
+                sigma=float(sigma_value),
+                lead_time=lead_time,
+                window=window,
+                periods=len(simulation.snapshots),
+            )
+        running_stock: float | None = None
         for index, snapshot in enumerate(simulation.snapshots):
             ds = ds_values[index * window]
+            start = index * window
+            forecast_quantity = None
+            if forecast_values is not None:
+                end = min(start + window, len(forecast_values))
+                if start >= len(forecast_values):
+                    forecast_quantity = None
+                else:
+                    forecast_quantity = sum(forecast_values[start:end])
+            if running_stock is None:
+                running_stock = float(ordered[0].current_stock)
+            stock_before = running_stock + float(snapshot.received)
+            starting_stock = int(round(stock_before))
+            current_stock = None
+            missed_sales = None
+            stock_after = stock_before - float(snapshot.demand)
+            if stock_after < 0:
+                missed_sales = int(round(-stock_after))
+                stock_after = 0.0
+            else:
+                missed_sales = 0
+            ending_stock = int(round(stock_after))
+            current_stock = ending_stock
+            running_stock = stock_after
+            safety_stock = (
+                safety_stock_values[index] if safety_stock_values else None
+            )
             decisions.append(
                 ReplenishmentDecisionRow(
                     unique_id=unique_id,
                     ds=ds,
                     quantity=snapshot.order_placed,
+                    demand=snapshot.demand,
+                    forecast_quantity=forecast_quantity,
+                    incoming_stock=snapshot.received,
+                    starting_stock=starting_stock,
+                    ending_stock=ending_stock,
+                    safety_stock=safety_stock,
+                    starting_on_hand=snapshot.starting_on_hand,
+                    ending_on_hand=snapshot.ending_on_hand,
+                    current_stock=current_stock,
+                    on_order=snapshot.on_order,
+                    backorders=snapshot.backorders,
+                    missed_sales=missed_sales,
                     sigma=metadata.sigma,
                     aggregation_window=metadata.aggregation_window,
                     percentile_target=metadata.percentile_target,
@@ -854,6 +964,8 @@ def build_point_forecast_article_configs_from_standard_rows(
     rows: Iterable[StandardSimulationRow],
     *,
     service_level_factor: Mapping[str, float] | float,
+    use_current_stock: bool | None = None,
+    actuals_override: Mapping[str, Iterable[int]] | None = None,
 ) -> dict[str, ArticleSimulationConfig]:
     grouped = _group_standard_rows(rows)
     configs: dict[str, ArticleSimulationConfig] = {}
@@ -861,12 +973,25 @@ def build_point_forecast_article_configs_from_standard_rows(
         ordered = _order_rows_by_ds(unique_id, ds_rows)
         lead_time = _ensure_constant(unique_id, ordered, "lead_time")
         initial_on_hand = _ensure_constant(unique_id, ordered, "initial_on_hand")
+        current_stock = _ensure_constant(unique_id, ordered, "current_stock")
+        if use_current_stock is None:
+            use_current = all(row.is_forecast for row in ordered)
+        else:
+            use_current = use_current_stock
+        starting_stock = current_stock if use_current else initial_on_hand
         holding_cost = _ensure_constant(unique_id, ordered, "holding_cost_per_unit")
         stockout_cost = _ensure_constant(unique_id, ordered, "stockout_cost_per_unit")
         order_cost = _ensure_constant(unique_id, ordered, "order_cost_per_order")
         demand = [row.demand for row in ordered]
         forecast = [row.forecast for row in ordered]
-        actuals = _trim_actuals_series(unique_id, ordered)
+        if actuals_override is None:
+            actuals = _trim_actuals_series(unique_id, ordered)
+        else:
+            if unique_id not in actuals_override:
+                raise ValueError(
+                    f"Missing actuals override for unique_id '{unique_id}'."
+                )
+            actuals = list(actuals_override[unique_id])
         policy = PointForecastOptimizationPolicy(
             forecast=forecast,
             actuals=actuals,
@@ -878,7 +1003,7 @@ def build_point_forecast_article_configs_from_standard_rows(
         configs[unique_id] = ArticleSimulationConfig(
             periods=len(ordered),
             demand=demand,
-            initial_on_hand=initial_on_hand,
+            initial_on_hand=starting_stock,
             lead_time=lead_time,
             policy=policy,
             holding_cost_per_unit=holding_cost,
@@ -888,8 +1013,51 @@ def build_point_forecast_article_configs_from_standard_rows(
     return configs
 
 
+def optimize_point_forecast_policy_and_simulate_actuals(
+    backtest_rows: Iterable[StandardSimulationRow],
+    evaluation_rows: Iterable[StandardSimulationRow],
+    candidate_factors: Iterable[float],
+    *,
+    use_current_stock: bool | None = None,
+) -> tuple[
+    dict[str, PointForecastOptimizationResult],
+    dict[str, SimulationResult],
+    list[ReplenishmentDecisionRow],
+]:
+    """Optimize safety-stock factors on backtest rows, then evaluate on actuals."""
+    backtest_configs = build_point_forecast_article_configs_from_standard_rows(
+        backtest_rows,
+        service_level_factor=1.0,
+    )
+    optimized = optimize_service_level_factors(
+        backtest_configs,
+        candidate_factors=candidate_factors,
+    )
+    backtest_actuals = _actuals_by_article(backtest_rows)
+    eval_factors = {
+        unique_id: result.service_level_factor
+        for unique_id, result in optimized.items()
+    }
+    eval_configs = build_point_forecast_article_configs_from_standard_rows(
+        evaluation_rows,
+        service_level_factor=eval_factors,
+        use_current_stock=use_current_stock,
+        actuals_override=backtest_actuals,
+    )
+    eval_simulations = simulate_replenishment_for_articles(eval_configs)
+    eval_decisions = build_replenishment_decisions_from_simulations(
+        evaluation_rows,
+        eval_simulations,
+        sigma=eval_factors,
+    )
+    return optimized, eval_simulations, eval_decisions
+
+
 def build_percentile_forecast_candidates_from_standard_rows(
     rows: Iterable[StandardSimulationRow],
+    *,
+    include_mean: bool = False,
+    use_current_stock: bool | None = None,
 ) -> dict[str, ForecastCandidatesConfig]:
     grouped = _group_standard_rows(rows)
     configs: dict[str, ForecastCandidatesConfig] = {}
@@ -897,6 +1065,12 @@ def build_percentile_forecast_candidates_from_standard_rows(
         ordered = _order_rows_by_ds(unique_id, ds_rows)
         lead_time = _ensure_constant(unique_id, ordered, "lead_time")
         initial_on_hand = _ensure_constant(unique_id, ordered, "initial_on_hand")
+        current_stock = _ensure_constant(unique_id, ordered, "current_stock")
+        if use_current_stock is None:
+            use_current = all(row.is_forecast for row in ordered)
+        else:
+            use_current = use_current_stock
+        starting_stock = current_stock if use_current else initial_on_hand
         holding_cost = _ensure_constant(unique_id, ordered, "holding_cost_per_unit")
         stockout_cost = _ensure_constant(unique_id, ordered, "stockout_cost_per_unit")
         order_cost = _ensure_constant(unique_id, ordered, "order_cost_per_order")
@@ -906,10 +1080,12 @@ def build_percentile_forecast_candidates_from_standard_rows(
             target: [row.forecast_percentiles[target] for row in ordered]
             for target in targets
         }
+        if include_mean and "mean" not in candidate_series:
+            candidate_series["mean"] = [row.forecast for row in ordered]
         configs[unique_id] = ForecastCandidatesConfig(
             periods=len(ordered),
             demand=demand,
-            initial_on_hand=initial_on_hand,
+            initial_on_hand=starting_stock,
             lead_time=lead_time,
             forecast_candidates=candidate_series,
             holding_cost_per_unit=holding_cost,
@@ -1190,3 +1366,62 @@ def _trim_actuals_series(
             )
         trimmed.append(int(actuals_value))
     return trimmed
+
+
+def _actuals_by_article(
+    rows: Iterable[StandardSimulationRow],
+) -> dict[str, list[int]]:
+    grouped = _group_standard_rows(rows)
+    actuals_by_article: dict[str, list[int]] = {}
+    for unique_id, ds_rows in grouped.items():
+        ordered = _order_rows_by_ds(unique_id, ds_rows)
+        actuals_by_article[unique_id] = _trim_actuals_series(unique_id, ordered)
+    return actuals_by_article
+
+
+def _safety_stock_by_period(
+    *,
+    forecast_values: list[int],
+    actuals_values: list[int],
+    sigma: float,
+    lead_time: int,
+    window: int,
+    periods: int,
+) -> list[float]:
+    if window > 1:
+        forecast_values = aggregate_series(
+            forecast_values,
+            periods=len(forecast_values),
+            window=window,
+            extend_last=True,
+        )
+        if actuals_values:
+            actuals_values = aggregate_series(
+                actuals_values,
+                periods=len(actuals_values),
+                window=window,
+                extend_last=False,
+            )
+        lead_time = aggregate_lead_time(lead_time, window)
+
+    lead_time_factor = math.sqrt(lead_time if lead_time > 0 else 1)
+    safety_values: list[float] = []
+    for period in range(periods):
+        max_index = min(period, len(actuals_values), len(forecast_values))
+        if max_index <= 0:
+            rmse = 0.0
+        else:
+            errors = [
+                actuals_values[index] - forecast_values[index]
+                for index in range(max_index)
+            ]
+            if not errors:
+                rmse = 0.0
+            elif len(errors) == 1:
+                rmse = abs(errors[0])
+            else:
+                rmse = math.sqrt(
+                    sum(error * error for error in errors) / len(errors)
+                )
+        safety_values.append(sigma * rmse * lead_time_factor)
+    return safety_values
