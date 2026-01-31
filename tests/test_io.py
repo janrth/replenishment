@@ -1,4 +1,5 @@
 import csv
+import math
 
 import pytest
 
@@ -481,26 +482,37 @@ def test_build_replenishment_decisions_from_simulations():
     snapshots = simulation.snapshots
     forecast_values = [row.forecast for row in rows]
     actuals_values = [row.actuals for row in rows]
-    aggregated_forecast = [
-        sum(forecast_values[index : index + 2])
-        for index in range(0, len(forecast_values), 2)
-    ]
-    aggregated_actuals = [
-        sum(actuals_values[index : index + 2])
-        for index in range(0, len(actuals_values), 2)
-    ]
-    safety_stock_values = [
-        0.0,
-        0.9 * abs(aggregated_actuals[0] - aggregated_forecast[0]),
-    ]
+    horizon = rows[0].lead_time + 2
+    lead_time_factor = math.sqrt(horizon)
+    safety_stock_values = []
+    for index in range(len(snapshots)):
+        max_index = min(index, len(actuals_values), len(forecast_values))
+        if max_index <= 0:
+            rmse = 0.0
+        else:
+            errors = [
+                actuals_values[i] - forecast_values[i]
+                for i in range(max_index)
+            ]
+            if len(errors) == 1:
+                rmse = abs(errors[0])
+            else:
+                rmse = math.sqrt(
+                    sum(error * error for error in errors) / len(errors)
+                )
+        safety_stock_values.append(0.9 * rmse * lead_time_factor)
     expected = []
     running_stock = rows[0].current_stock
     for index, snapshot in enumerate(snapshots):
-        start = index * 2
+        start = index
         end = min(start + 2, len(forecast_values))
         stock_before = float(running_stock) + float(snapshot.received)
         starting_stock = int(round(stock_before))
-        forecast_quantity = sum(forecast_values[start:end])
+        forecast_quantity = sum(forecast_values[start:end]) / 2
+        lead_end = min(start + horizon, len(forecast_values))
+        forecast_quantity_lead_time = (
+            sum(forecast_values[start:lead_end]) / 2
+        )
         stock_after = stock_before - float(snapshot.demand)
         if stock_after < 0:
             missed_sales = int(round(-stock_after))
@@ -517,6 +529,7 @@ def test_build_replenishment_decisions_from_simulations():
                 quantity=snapshot.order_placed,
                 demand=snapshot.demand,
                 forecast_quantity=forecast_quantity,
+                forecast_quantity_lead_time=forecast_quantity_lead_time,
                 incoming_stock=snapshot.received,
                 starting_stock=starting_stock,
                 ending_stock=ending_stock,
@@ -528,6 +541,7 @@ def test_build_replenishment_decisions_from_simulations():
                 backorders=snapshot.backorders,
                 missed_sales=missed_sales,
                 sigma=0.9,
+                service_level_mode="factor",
                 aggregation_window=2,
             )
         )
@@ -601,9 +615,20 @@ def test_build_replenishment_decisions_from_optimization_results():
     expected = []
     running_stock = rows[0].current_stock
     for index, snapshot in enumerate(simulation.snapshots):
-        start = index * window
-        end = start + window
-        forecast_quantity = sum(forecast_values[start:end])
+        start = index
+        end = min(start + window, len(forecast_values))
+        forecast_quantity = sum(forecast_values[start:end]) / window
+        if window > 1:
+            horizon = rows[0].lead_time + window
+            lead_end = min(start + horizon, len(forecast_values))
+            forecast_quantity_lead_time = (
+                sum(forecast_values[start:lead_end]) / window
+            )
+        else:
+            lead_index = min(
+                start + rows[0].lead_time, len(forecast_values) - 1
+            )
+            forecast_quantity_lead_time = forecast_values[lead_index]
         stock_before = float(running_stock) + float(snapshot.received)
         starting_stock = int(round(stock_before))
         stock_after = stock_before - float(snapshot.demand)
@@ -622,6 +647,7 @@ def test_build_replenishment_decisions_from_optimization_results():
                 quantity=snapshot.order_placed,
                 demand=snapshot.demand,
                 forecast_quantity=forecast_quantity,
+                forecast_quantity_lead_time=forecast_quantity_lead_time,
                 incoming_stock=snapshot.received,
                 starting_stock=starting_stock,
                 ending_stock=ending_stock,
@@ -785,6 +811,11 @@ def test_build_replenishment_decisions_from_simulations_merges_metadata():
         stock_before = float(running_stock) + float(snapshot.received)
         starting_stock = int(round(stock_before))
         forecast_quantity = forecast_values[index]
+        if rows[0].lead_time > 0:
+            lead_index = min(index + rows[0].lead_time, len(forecast_values) - 1)
+            forecast_quantity_lead_time = forecast_values[lead_index]
+        else:
+            forecast_quantity_lead_time = forecast_quantity
         stock_after = stock_before - float(snapshot.demand)
         if stock_after < 0:
             missed_sales = int(round(-stock_after))
@@ -801,6 +832,7 @@ def test_build_replenishment_decisions_from_simulations_merges_metadata():
                 quantity=snapshot.order_placed,
                 demand=snapshot.demand,
                 forecast_quantity=forecast_quantity,
+                forecast_quantity_lead_time=forecast_quantity_lead_time,
                 incoming_stock=snapshot.received,
                 starting_stock=starting_stock,
                 ending_stock=ending_stock,
@@ -866,7 +898,7 @@ def test_decision_current_stock_rolls_forward_from_current_stock():
     )
 
     assert decisions[0].current_stock == 16
-    assert decisions[1].current_stock == 16
+    assert decisions[1].current_stock == 12
 
 
 def test_standard_simulation_rows_from_dataframe_history_and_cutoff():

@@ -22,7 +22,8 @@ from .optimization import (
     PointForecastOptimizationResult,
     optimize_service_level_factors,
 )
-from .policies import PointForecastOptimizationPolicy
+from .policies import LeadTimeForecastOptimizationPolicy, PointForecastOptimizationPolicy
+from .service_levels import service_level_multiplier
 from .simulation import (
     ArticleSimulationConfig,
     SimulationResult,
@@ -71,7 +72,8 @@ class ReplenishmentDecisionRow:
     ds: str
     quantity: int
     demand: int | None = None
-    forecast_quantity: int | None = None
+    forecast_quantity: float | None = None
+    forecast_quantity_lead_time: float | None = None
     incoming_stock: int | None = None
     starting_stock: int | None = None
     ending_stock: int | None = None
@@ -83,6 +85,7 @@ class ReplenishmentDecisionRow:
     backorders: int | None = None
     missed_sales: int | None = None
     sigma: float | None = None
+    service_level_mode: str | None = None
     aggregation_window: int | None = None
     percentile_target: float | str | None = None
 
@@ -90,6 +93,7 @@ class ReplenishmentDecisionRow:
 @dataclass(frozen=True)
 class ReplenishmentDecisionMetadata:
     sigma: float | None = None
+    service_level_mode: str | None = None
     aggregation_window: int | None = None
     percentile_target: float | str | None = None
 
@@ -250,6 +254,7 @@ def replenishment_decision_rows_to_dicts(
             "quantity": row.quantity,
             "demand": row.demand,
             "forecast_quantity": row.forecast_quantity,
+            "forecast_quantity_lead_time": row.forecast_quantity_lead_time,
             "incoming_stock": row.incoming_stock,
             "starting_stock": row.starting_stock,
             "ending_stock": row.ending_stock,
@@ -299,6 +304,8 @@ def build_replenishment_decisions_from_simulations(
     *,
     aggregation_window: Mapping[str, int] | int | None = None,
     sigma: Mapping[str, float] | float | None = None,
+    fixed_rmse: Mapping[str, float] | float | None = None,
+    service_level_mode: Mapping[str, str] | str | None = None,
     percentile_target: Mapping[str, float | str] | float | str | None = None,
     decision_metadata: Mapping[str, ReplenishmentDecisionMetadata] | None = None,
 ) -> list[ReplenishmentDecisionRow]:
@@ -332,14 +339,29 @@ def build_replenishment_decisions_from_simulations(
         if window <= 0:
             raise ValueError("aggregation_window must be positive.")
         ds_values = [row.ds for row in ordered]
-        max_index = (len(simulation.snapshots) - 1) * window
-        if max_index >= len(ds_values):
+        snapshot_count = len(simulation.snapshots)
+        daily_snapshots = snapshot_count == len(ds_values)
+        snapshot_window = 1 if daily_snapshots else window
+        max_index = (snapshot_count - 1) * snapshot_window
+        if not daily_snapshots and max_index >= len(ds_values):
             raise ValueError(
                 f"Aggregation window {window} is incompatible with ds length for unique_id '{unique_id}'."
             )
         sigma_value = _resolve_optional_value(sigma, unique_id, "sigma")
         if sigma_value is None and simulation.metadata is not None:
             sigma_value = simulation.metadata.service_level_factor
+        fixed_rmse_value = _resolve_optional_value(
+            fixed_rmse, unique_id, "fixed_rmse"
+        )
+        mode_value = _resolve_optional_value(
+            service_level_mode, unique_id, "service_level_mode"
+        )
+        if mode_value is not None and not isinstance(mode_value, str):
+            raise TypeError(
+                "service_level_mode must be a string or mapping of strings."
+            )
+        if mode_value is None and simulation.metadata is not None:
+            mode_value = simulation.metadata.service_level_mode
         target_value = _resolve_optional_value(
             percentile_target, unique_id, "percentile_target"
         )
@@ -355,16 +377,23 @@ def build_replenishment_decisions_from_simulations(
                 forecast_values = [
                     row.forecast_percentiles[target_value] for row in ordered
                 ]
+        forecast_length = len(forecast_values) if forecast_values is not None else 0
         metadata = metadata_lookup.get(unique_id)
         if metadata is None:
             metadata = ReplenishmentDecisionMetadata(
                 sigma=sigma_value,
+                service_level_mode=mode_value,
                 aggregation_window=window,
                 percentile_target=target_value,
             )
         else:
             metadata = ReplenishmentDecisionMetadata(
                 sigma=metadata.sigma if metadata.sigma is not None else sigma_value,
+                service_level_mode=(
+                    metadata.service_level_mode
+                    if metadata.service_level_mode is not None
+                    else mode_value
+                ),
                 aggregation_window=(
                     metadata.aggregation_window
                     if metadata.aggregation_window is not None
@@ -384,21 +413,60 @@ def build_replenishment_decisions_from_simulations(
                 forecast_values=forecast_series,
                 actuals_values=actuals_series,
                 sigma=float(sigma_value),
+                service_level_mode=mode_value,
+                fixed_rmse=fixed_rmse_value,
                 lead_time=lead_time,
                 window=window,
                 periods=len(simulation.snapshots),
             )
         running_stock: float | None = None
         for index, snapshot in enumerate(simulation.snapshots):
-            ds = ds_values[index * window]
-            start = index * window
+            ds = ds_values[index * snapshot_window]
+            start = index * snapshot_window
             forecast_quantity = None
+            forecast_quantity_lead_time = None
             if forecast_values is not None:
-                end = min(start + window, len(forecast_values))
-                if start >= len(forecast_values):
+                if start >= forecast_length or forecast_length == 0:
                     forecast_quantity = None
+                    forecast_quantity_lead_time = None
                 else:
-                    forecast_quantity = sum(forecast_values[start:end])
+                    if daily_snapshots and window > 1:
+                        cycle_end = min(start + window, forecast_length)
+                        forecast_quantity = sum(
+                            forecast_values[start:cycle_end]
+                        )
+                        horizon = lead_time + window
+                        if horizon <= 0:
+                            horizon = 1
+                        lead_end = min(start + horizon, forecast_length)
+                        forecast_quantity_lead_time = sum(
+                            forecast_values[start:lead_end]
+                        )
+                        if window > 0:
+                            forecast_quantity_lead_time = (
+                                forecast_quantity_lead_time / window
+                            )
+                            forecast_quantity = forecast_quantity / window
+                    elif daily_snapshots:
+                        forecast_quantity = forecast_values[start]
+                        target_period = start + lead_time
+                        if target_period >= forecast_length:
+                            forecast_quantity_lead_time = forecast_values[-1]
+                        else:
+                            forecast_quantity_lead_time = forecast_values[
+                                target_period
+                            ]
+                    else:
+                        end = min(start + snapshot_window, forecast_length)
+                        forecast_quantity = sum(
+                            forecast_values[start:end]
+                        )
+                        forecast_quantity_lead_time = forecast_quantity
+                        if window > 0:
+                            forecast_quantity_lead_time = (
+                                forecast_quantity_lead_time / window
+                            )
+                            forecast_quantity = forecast_quantity / window
             if running_stock is None:
                 running_stock = float(ordered[0].current_stock)
             stock_before = running_stock + float(snapshot.received)
@@ -424,6 +492,7 @@ def build_replenishment_decisions_from_simulations(
                     quantity=snapshot.order_placed,
                     demand=snapshot.demand,
                     forecast_quantity=forecast_quantity,
+                    forecast_quantity_lead_time=forecast_quantity_lead_time,
                     incoming_stock=snapshot.received,
                     starting_stock=starting_stock,
                     ending_stock=ending_stock,
@@ -435,6 +504,7 @@ def build_replenishment_decisions_from_simulations(
                     backorders=snapshot.backorders,
                     missed_sales=missed_sales,
                     sigma=metadata.sigma,
+                    service_level_mode=metadata.service_level_mode,
                     aggregation_window=metadata.aggregation_window,
                     percentile_target=metadata.percentile_target,
                 )
@@ -841,6 +911,7 @@ def build_point_forecast_article_configs(
     lead_time: Mapping[str, int] | int,
     initial_on_hand: Mapping[str, int] | int,
     service_level_factor: Mapping[str, float] | float,
+    service_level_mode: Mapping[str, str] | str | None = None,
     holding_cost_per_unit: Mapping[str, float] | float = 0.0,
     stockout_cost_per_unit: Mapping[str, float] | float = 0.0,
     order_cost_per_order: Mapping[str, float] | float = 0.0,
@@ -863,6 +934,13 @@ def build_point_forecast_article_configs(
         demand = [period_rows[index].demand for index in range(periods)]
         forecast = [period_rows[index].forecast for index in range(periods)]
         actuals = [period_rows[index].actual for index in range(periods)]
+        mode_value = _resolve_optional_value(
+            service_level_mode, unique_id, "service_level_mode"
+        )
+        if mode_value is not None and not isinstance(mode_value, str):
+            raise TypeError(
+                "service_level_mode must be a string or mapping of strings."
+            )
         policy = PointForecastOptimizationPolicy(
             forecast=forecast,
             actuals=actuals,
@@ -870,6 +948,7 @@ def build_point_forecast_article_configs(
             service_level_factor=_resolve_value(
                 service_level_factor, unique_id, "service_level_factor"
             ),
+            service_level_mode=mode_value if mode_value is not None else "factor",
         )
         configs[unique_id] = ArticleSimulationConfig(
             periods=periods,
@@ -964,6 +1043,8 @@ def build_point_forecast_article_configs_from_standard_rows(
     rows: Iterable[StandardSimulationRow],
     *,
     service_level_factor: Mapping[str, float] | float,
+    service_level_mode: Mapping[str, str] | str | None = None,
+    fixed_rmse: Mapping[str, float] | float | None = None,
     use_current_stock: bool | None = None,
     actuals_override: Mapping[str, Iterable[int]] | None = None,
 ) -> dict[str, ArticleSimulationConfig]:
@@ -992,12 +1073,89 @@ def build_point_forecast_article_configs_from_standard_rows(
                     f"Missing actuals override for unique_id '{unique_id}'."
                 )
             actuals = list(actuals_override[unique_id])
+        mode_value = _resolve_optional_value(
+            service_level_mode, unique_id, "service_level_mode"
+        )
+        if mode_value is not None and not isinstance(mode_value, str):
+            raise TypeError(
+                "service_level_mode must be a string or mapping of strings."
+            )
         policy = PointForecastOptimizationPolicy(
             forecast=forecast,
             actuals=actuals,
             lead_time=lead_time,
             service_level_factor=_resolve_value(
                 service_level_factor, unique_id, "service_level_factor"
+            ),
+            service_level_mode=mode_value if mode_value is not None else "factor",
+            fixed_rmse=_resolve_optional_value(
+                fixed_rmse, unique_id, "fixed_rmse"
+            ),
+        )
+        configs[unique_id] = ArticleSimulationConfig(
+            periods=len(ordered),
+            demand=demand,
+            initial_on_hand=starting_stock,
+            lead_time=lead_time,
+            policy=policy,
+            holding_cost_per_unit=holding_cost,
+            stockout_cost_per_unit=stockout_cost,
+            order_cost_per_order=order_cost,
+        )
+    return configs
+
+
+def build_lead_time_forecast_article_configs_from_standard_rows(
+    rows: Iterable[StandardSimulationRow],
+    *,
+    service_level_factor: Mapping[str, float] | float,
+    service_level_mode: Mapping[str, str] | str | None = None,
+    fixed_rmse: Mapping[str, float] | float | None = None,
+    use_current_stock: bool | None = None,
+    actuals_override: Mapping[str, Iterable[int]] | None = None,
+) -> dict[str, ArticleSimulationConfig]:
+    grouped = _group_standard_rows(rows)
+    configs: dict[str, ArticleSimulationConfig] = {}
+    for unique_id, ds_rows in grouped.items():
+        ordered = _order_rows_by_ds(unique_id, ds_rows)
+        lead_time = _ensure_constant(unique_id, ordered, "lead_time")
+        initial_on_hand = _ensure_constant(unique_id, ordered, "initial_on_hand")
+        current_stock = _ensure_constant(unique_id, ordered, "current_stock")
+        if use_current_stock is None:
+            use_current = all(row.is_forecast for row in ordered)
+        else:
+            use_current = use_current_stock
+        starting_stock = current_stock if use_current else initial_on_hand
+        holding_cost = _ensure_constant(unique_id, ordered, "holding_cost_per_unit")
+        stockout_cost = _ensure_constant(unique_id, ordered, "stockout_cost_per_unit")
+        order_cost = _ensure_constant(unique_id, ordered, "order_cost_per_order")
+        demand = [row.demand for row in ordered]
+        forecast = [row.forecast for row in ordered]
+        if actuals_override is None:
+            actuals = _trim_actuals_series(unique_id, ordered)
+        else:
+            if unique_id not in actuals_override:
+                raise ValueError(
+                    f"Missing actuals override for unique_id '{unique_id}'."
+                )
+            actuals = list(actuals_override[unique_id])
+        mode_value = _resolve_optional_value(
+            service_level_mode, unique_id, "service_level_mode"
+        )
+        if mode_value is not None and not isinstance(mode_value, str):
+            raise TypeError(
+                "service_level_mode must be a string or mapping of strings."
+            )
+        policy = LeadTimeForecastOptimizationPolicy(
+            forecast=forecast,
+            actuals=actuals,
+            lead_time=lead_time,
+            service_level_factor=_resolve_value(
+                service_level_factor, unique_id, "service_level_factor"
+            ),
+            service_level_mode=mode_value if mode_value is not None else "factor",
+            fixed_rmse=_resolve_optional_value(
+                fixed_rmse, unique_id, "fixed_rmse"
             ),
         )
         configs[unique_id] = ArticleSimulationConfig(
@@ -1019,6 +1177,7 @@ def optimize_point_forecast_policy_and_simulate_actuals(
     candidate_factors: Iterable[float],
     *,
     use_current_stock: bool | None = None,
+    service_level_mode: str | None = None,
 ) -> tuple[
     dict[str, PointForecastOptimizationResult],
     dict[str, SimulationResult],
@@ -1032,6 +1191,7 @@ def optimize_point_forecast_policy_and_simulate_actuals(
     optimized = optimize_service_level_factors(
         backtest_configs,
         candidate_factors=candidate_factors,
+        service_level_mode=service_level_mode,
     )
     backtest_actuals = _actuals_by_article(backtest_rows)
     eval_factors = {
@@ -1041,6 +1201,7 @@ def optimize_point_forecast_policy_and_simulate_actuals(
     eval_configs = build_point_forecast_article_configs_from_standard_rows(
         evaluation_rows,
         service_level_factor=eval_factors,
+        service_level_mode=service_level_mode,
         use_current_stock=use_current_stock,
         actuals_override=backtest_actuals,
     )
@@ -1049,6 +1210,7 @@ def optimize_point_forecast_policy_and_simulate_actuals(
         evaluation_rows,
         eval_simulations,
         sigma=eval_factors,
+        service_level_mode=service_level_mode,
     )
     return optimized, eval_simulations, eval_decisions
 
@@ -1350,6 +1512,61 @@ def _try_parse_date(value: str) -> date | None:
         return None
 
 
+def _rmse_from_series(actuals: list[int], forecast: list[int]) -> float:
+    max_index = min(len(actuals), len(forecast))
+    if max_index <= 0:
+        return 0.0
+    errors = [actuals[index] - forecast[index] for index in range(max_index)]
+    if not errors:
+        return 0.0
+    if len(errors) == 1:
+        return abs(errors[0])
+    return math.sqrt(sum(error * error for error in errors) / len(errors))
+
+
+def compute_backtest_rmse_by_article(
+    rows: Iterable[StandardSimulationRow],
+    *,
+    aggregation_window: Mapping[str, int] | int = 1,
+) -> dict[str, float]:
+    """Compute fixed RMSE per article using backtest rows only."""
+    if hasattr(rows, "to_dicts") or hasattr(rows, "to_dict"):
+        rows = standard_simulation_rows_from_dataframe(rows)
+    grouped = _group_standard_rows(rows)
+    rmse_by_article: dict[str, float] = {}
+    for unique_id, ds_rows in grouped.items():
+        ordered = _order_rows_by_ds(unique_id, ds_rows)
+        backtest_rows = [row for row in ordered if not row.is_forecast]
+        if not backtest_rows:
+            raise ValueError(
+                f"No backtest rows available for unique_id '{unique_id}'."
+            )
+        forecast_values = [row.forecast for row in backtest_rows]
+        actuals_values = [int(row.actuals) for row in backtest_rows]
+        window = _resolve_value(
+            aggregation_window, unique_id, "aggregation_window"
+        )
+        if not isinstance(window, int) or window <= 0:
+            raise ValueError("aggregation_window must be a positive int.")
+        if window > 1:
+            forecast_values = aggregate_series(
+                forecast_values,
+                periods=len(forecast_values),
+                window=window,
+                extend_last=True,
+            )
+            actuals_values = aggregate_series(
+                actuals_values,
+                periods=len(actuals_values),
+                window=window,
+                extend_last=False,
+            )
+        rmse_by_article[unique_id] = _rmse_from_series(
+            actuals_values, forecast_values
+        )
+    return rmse_by_article
+
+
 def _trim_actuals_series(
     unique_id: str, rows: Iterable[StandardSimulationRow]
 ) -> list[int]:
@@ -1384,11 +1601,14 @@ def _safety_stock_by_period(
     forecast_values: list[int],
     actuals_values: list[int],
     sigma: float,
+    service_level_mode: str | None,
+    fixed_rmse: float | None,
     lead_time: int,
     window: int,
     periods: int,
 ) -> list[float]:
-    if window > 1:
+    use_aggregation = window > 1 and periods < len(forecast_values)
+    if use_aggregation:
         forecast_values = aggregate_series(
             forecast_values,
             periods=len(forecast_values),
@@ -1404,24 +1624,33 @@ def _safety_stock_by_period(
             )
         lead_time = aggregate_lead_time(lead_time, window)
 
-    lead_time_factor = math.sqrt(lead_time if lead_time > 0 else 1)
+    horizon = (
+        lead_time + window
+        if window > 1 and not use_aggregation
+        else lead_time
+    )
+    lead_time_factor = math.sqrt(horizon if horizon > 0 else 1)
+    sigma_multiplier = service_level_multiplier(sigma, service_level_mode)
     safety_values: list[float] = []
     for period in range(periods):
-        max_index = min(period, len(actuals_values), len(forecast_values))
-        if max_index <= 0:
-            rmse = 0.0
+        if fixed_rmse is not None:
+            rmse = float(fixed_rmse)
         else:
-            errors = [
-                actuals_values[index] - forecast_values[index]
-                for index in range(max_index)
-            ]
-            if not errors:
+            max_index = min(period, len(actuals_values), len(forecast_values))
+            if max_index <= 0:
                 rmse = 0.0
-            elif len(errors) == 1:
-                rmse = abs(errors[0])
             else:
-                rmse = math.sqrt(
-                    sum(error * error for error in errors) / len(errors)
-                )
-        safety_values.append(sigma * rmse * lead_time_factor)
+                errors = [
+                    actuals_values[index] - forecast_values[index]
+                    for index in range(max_index)
+                ]
+                if not errors:
+                    rmse = 0.0
+                elif len(errors) == 1:
+                    rmse = abs(errors[0])
+                else:
+                    rmse = math.sqrt(
+                        sum(error * error for error in errors) / len(errors)
+                    )
+        safety_values.append(sigma_multiplier * rmse * lead_time_factor)
     return safety_values

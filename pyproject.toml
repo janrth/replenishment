@@ -4,7 +4,11 @@ version = "0.1.0"
 description = "Stock replenishment simulation library."
 readme = "README.md"
 requires-python = ">=3.9"
-dependencies = ["matplotlib>=3.8", "pandas>=2.0"]
+dependencies = [
+    "ipykernel>=6.31.0",
+    "matplotlib>=3.8",
+    "pandas>=2.0",
+]
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]

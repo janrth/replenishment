@@ -19,12 +19,6 @@ from replenishment import (
     point_forecast_optimisation,
     simulate_replenishment,
 )
-from replenishment.aggregation import (
-    aggregate_lead_time,
-    aggregate_periods,
-    aggregate_series,
-)
-
 
 def test_simulation_summary_consistency():
     policy = ReorderPointPolicy(reorder_point=10, order_quantity=20)
@@ -277,32 +271,18 @@ def test_evaluate_aggregation_and_forecast_target_costs_matches_simulation():
         candidate_windows=[window],
     )
 
-    aggregated_demand = aggregate_series(
-        config.demand,
-        periods=config.periods,
-        window=window,
-        extend_last=False,
-    )
-    aggregated_periods = aggregate_periods(config.periods, window)
-    aggregated_lead_time = aggregate_lead_time(config.lead_time, window)
-
     expected: dict[str, float] = {}
     for target, forecast in config.forecast_candidates.items():
-        aggregated_forecast = aggregate_series(
-            forecast,
-            periods=config.periods,
-            window=window,
-            extend_last=True,
-        )
         policy = PercentileForecastOptimizationPolicy(
-            forecast=aggregated_forecast,
-            lead_time=aggregated_lead_time,
+            forecast=forecast,
+            lead_time=config.lead_time,
+            aggregation_window=window,
         )
         simulation = simulate_replenishment(
-            periods=aggregated_periods,
-            demand=aggregated_demand,
+            periods=config.periods,
+            demand=config.demand,
             initial_on_hand=config.initial_on_hand,
-            lead_time=aggregated_lead_time,
+            lead_time=config.lead_time,
             policy=policy,
             holding_cost_per_unit=config.holding_cost_per_unit,
             stockout_cost_per_unit=config.stockout_cost_per_unit,
@@ -339,40 +319,20 @@ def test_evaluate_aggregation_and_service_level_factor_costs_matches_simulation(
         candidate_factors=factors,
     )
 
-    aggregated_forecast = aggregate_series(
-        forecast,
-        periods=config.periods,
-        window=window,
-        extend_last=True,
-    )
-    aggregated_actuals = aggregate_series(
-        actuals,
-        periods=config.periods,
-        window=window,
-        extend_last=False,
-    )
-    aggregated_demand = aggregate_series(
-        config.demand,
-        periods=config.periods,
-        window=window,
-        extend_last=False,
-    )
-    aggregated_periods = aggregate_periods(config.periods, window)
-    aggregated_lead_time = aggregate_lead_time(config.lead_time, window)
-
     expected: dict[float, float] = {}
     for factor in factors:
         policy = PointForecastOptimizationPolicy(
-            forecast=aggregated_forecast,
-            actuals=aggregated_actuals,
-            lead_time=aggregated_lead_time,
+            forecast=forecast,
+            actuals=actuals,
+            lead_time=config.lead_time,
             service_level_factor=factor,
+            aggregation_window=window,
         )
         simulation = simulate_replenishment(
-            periods=aggregated_periods,
-            demand=aggregated_demand,
+            periods=config.periods,
+            demand=config.demand,
             initial_on_hand=config.initial_on_hand,
-            lead_time=aggregated_lead_time,
+            lead_time=config.lead_time,
             policy=policy,
             holding_cost_per_unit=config.holding_cost_per_unit,
             stockout_cost_per_unit=config.stockout_cost_per_unit,
@@ -393,8 +353,8 @@ def test_simulation_with_aggregation_groups_demand():
         aggregation_window=3,
     )
 
-    assert len(result.snapshots) == 2
-    assert [snapshot.demand for snapshot in result.snapshots] == [6, 15]
+    assert len(result.snapshots) == 6
+    assert [snapshot.demand for snapshot in result.snapshots] == [1, 2, 3, 4, 5, 6]
     assert result.summary.total_demand == 21
 
 
@@ -409,7 +369,7 @@ def test_simulation_with_aggregation_truncates_demand_to_periods():
         aggregation_window=3,
     )
 
-    assert [snapshot.demand for snapshot in result.snapshots] == [6, 9]
+    assert [snapshot.demand for snapshot in result.snapshots] == [1, 2, 3, 4, 5]
     assert result.summary.total_demand == 15
 
 
@@ -480,38 +440,19 @@ def test_optimize_aggregation_and_service_level_factors_picks_lowest_cost():
 
     candidate_costs = {}
     for window in windows:
-        aggregated_forecast = aggregate_series(
-            forecast,
-            periods=config.periods,
-            window=window,
-            extend_last=True,
-        )
-        aggregated_actuals = aggregate_series(
-            actuals,
-            periods=config.periods,
-            window=window,
-            extend_last=False,
-        )
-        aggregated_demand = aggregate_series(
-            config.demand,
-            periods=config.periods,
-            window=window,
-            extend_last=False,
-        )
-        aggregated_periods = aggregate_periods(config.periods, window)
-        aggregated_lead_time = aggregate_lead_time(config.lead_time, window)
         for factor in factors:
             policy = PointForecastOptimizationPolicy(
-                forecast=aggregated_forecast,
-                actuals=aggregated_actuals,
-                lead_time=aggregated_lead_time,
+                forecast=forecast,
+                actuals=actuals,
+                lead_time=config.lead_time,
                 service_level_factor=factor,
+                aggregation_window=window,
             )
             simulation = simulate_replenishment(
-                periods=aggregated_periods,
-                demand=aggregated_demand,
+                periods=config.periods,
+                demand=config.demand,
                 initial_on_hand=config.initial_on_hand,
-                lead_time=aggregated_lead_time,
+                lead_time=config.lead_time,
                 policy=policy,
                 holding_cost_per_unit=config.holding_cost_per_unit,
                 stockout_cost_per_unit=config.stockout_cost_per_unit,
@@ -548,30 +489,17 @@ def test_optimize_aggregation_and_forecast_targets_picks_lowest_cost():
 
     candidate_costs = {}
     for window in windows:
-        aggregated_demand = aggregate_series(
-            config.demand,
-            periods=config.periods,
-            window=window,
-            extend_last=False,
-        )
-        aggregated_periods = aggregate_periods(config.periods, window)
-        aggregated_lead_time = aggregate_lead_time(config.lead_time, window)
         for target, forecast in config.forecast_candidates.items():
-            aggregated_forecast = aggregate_series(
-                forecast,
-                periods=config.periods,
-                window=window,
-                extend_last=True,
-            )
             policy = PercentileForecastOptimizationPolicy(
-                forecast=aggregated_forecast,
-                lead_time=aggregated_lead_time,
+                forecast=forecast,
+                lead_time=config.lead_time,
+                aggregation_window=window,
             )
             simulation = simulate_replenishment(
-                periods=aggregated_periods,
-                demand=aggregated_demand,
+                periods=config.periods,
+                demand=config.demand,
                 initial_on_hand=config.initial_on_hand,
-                lead_time=aggregated_lead_time,
+                lead_time=config.lead_time,
                 policy=policy,
                 holding_cost_per_unit=config.holding_cost_per_unit,
                 stockout_cost_per_unit=config.stockout_cost_per_unit,

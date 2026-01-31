@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as dataclass_replace
 
 from .aggregation import (
     aggregate_lead_time,
@@ -14,9 +14,11 @@ from .aggregation import (
 from .policies import (
     ForecastBasedPolicy,
     ForecastSeriesPolicy,
+    LeadTimeForecastOptimizationPolicy,
     PercentileForecastOptimizationPolicy,
     PointForecastOptimizationPolicy,
 )
+from .service_levels import normalize_service_level_mode
 from .simulation import (
     ArticleSimulationConfig,
     DemandModel,
@@ -30,6 +32,7 @@ def _attach_metadata(
     simulation: SimulationResult,
     *,
     service_level_factor: float | None = None,
+    service_level_mode: str | None = None,
     aggregation_window: int | None = None,
     percentile_target: float | str | None = None,
 ) -> SimulationResult:
@@ -39,6 +42,13 @@ def _attach_metadata(
             service_level_factor
             if service_level_factor is not None
             else base.service_level_factor
+            if base is not None
+            else None
+        ),
+        service_level_mode=(
+            service_level_mode
+            if service_level_mode is not None
+            else base.service_level_mode
             if base is not None
             else None
         ),
@@ -62,6 +72,24 @@ def _attach_metadata(
         summary=simulation.summary,
         metadata=metadata,
     )
+
+
+def _rmse_from_series(actuals: Iterable[int], forecasts: Iterable[int]) -> float:
+    actual_values = list(actuals)
+    forecast_values = list(forecasts)
+    count = min(len(actual_values), len(forecast_values))
+    if count <= 0:
+        return 0.0
+    errors = [
+        actual_values[index] - forecast_values[index]
+        for index in range(count)
+    ]
+    if not errors:
+        return 0.0
+    if len(errors) == 1:
+        return abs(errors[0])
+    mean_squared_error = sum(error * error for error in errors) / len(errors)
+    return mean_squared_error**0.5
 
 
 @dataclass(frozen=True)
@@ -128,33 +156,101 @@ class AggregationForecastTargetOptimizationResult:
     simulation: SimulationResult
 
 
+def _resolve_service_level_mode(
+    policy: ForecastBasedPolicy | PointForecastOptimizationPolicy | LeadTimeForecastOptimizationPolicy,
+    service_level_mode: str | None,
+) -> str:
+    if service_level_mode is not None:
+        return normalize_service_level_mode(service_level_mode)
+    return normalize_service_level_mode(getattr(policy, "service_level_mode", None))
+
+
+def _validate_service_level_candidates(
+    factors: list[float], service_level_mode: str
+) -> None:
+    if not factors:
+        raise ValueError("Candidate factors must be provided.")
+    if service_level_mode == "factor":
+        if any(factor < 0 for factor in factors):
+            raise ValueError("Service level factors must be non-negative.")
+        return
+    if any(factor <= 0 or factor >= 1 for factor in factors):
+        raise ValueError(
+            "Service level probabilities must be between 0 and 1 (exclusive)."
+        )
+
+
+def _candidate_policy_for(
+    policy: ForecastBasedPolicy | PointForecastOptimizationPolicy | LeadTimeForecastOptimizationPolicy,
+    *,
+    forecast: Iterable[int] | DemandModel,
+    actuals: Iterable[int] | DemandModel,
+    lead_time: int,
+    factor: float,
+    mode: str,
+    fixed_rmse: float | None = None,
+    aggregation_window: int | None = None,
+) -> PointForecastOptimizationPolicy | LeadTimeForecastOptimizationPolicy:
+    if isinstance(policy, LeadTimeForecastOptimizationPolicy):
+        return LeadTimeForecastOptimizationPolicy(
+            forecast=forecast,
+            actuals=actuals,
+            lead_time=lead_time,
+            aggregation_window=(
+                aggregation_window
+                if aggregation_window is not None
+                else policy.aggregation_window
+            ),
+            service_level_factor=factor,
+            service_level_mode=mode,
+            fixed_rmse=fixed_rmse,
+        )
+    return PointForecastOptimizationPolicy(
+        forecast=forecast,
+        actuals=actuals,
+        lead_time=lead_time,
+        aggregation_window=(
+            aggregation_window
+            if aggregation_window is not None
+            else policy.aggregation_window
+        ),
+        service_level_factor=factor,
+        service_level_mode=mode,
+        fixed_rmse=fixed_rmse,
+    )
+
+
 def optimize_service_level_factors(
     articles: Mapping[str, ArticleSimulationConfig],
     candidate_factors: Iterable[float],
+    service_level_mode: str | None = None,
 ) -> dict[str, PointForecastOptimizationResult]:
     """Pick the point-forecast safety stock factor that minimizes total cost."""
     factors = list(candidate_factors)
-    if not factors:
-        raise ValueError("Candidate factors must be provided.")
-    if any(factor < 0 for factor in factors):
-        raise ValueError("Service level factors must be non-negative.")
 
     results: dict[str, PointForecastOptimizationResult] = {}
     for article_id, config in articles.items():
         policy = config.policy
         if not isinstance(
-            policy, (ForecastBasedPolicy, PointForecastOptimizationPolicy)
+            policy,
+            (ForecastBasedPolicy, PointForecastOptimizationPolicy, LeadTimeForecastOptimizationPolicy),
         ):
             raise TypeError(
                 "Point forecast optimization requires point-forecast policies."
             )
+        mode = _resolve_service_level_mode(policy, service_level_mode)
+        _validate_service_level_candidates(factors, mode)
         best_result: PointForecastOptimizationResult | None = None
         for factor in factors:
-            candidate_policy = PointForecastOptimizationPolicy(
+            candidate_policy = _candidate_policy_for(
+                policy,
                 forecast=policy.forecast,
                 actuals=policy.actuals,
                 lead_time=config.lead_time,
-                service_level_factor=factor,
+                factor=factor,
+                mode=mode,
+                fixed_rmse=getattr(policy, "fixed_rmse", None),
+                aggregation_window=getattr(policy, "aggregation_window", None),
             )
             simulation = simulate_replenishment(
                 periods=config.periods,
@@ -168,7 +264,9 @@ def optimize_service_level_factors(
                 order_cost_per_unit=config.order_cost_per_unit,
             )
             simulation = _attach_metadata(
-                simulation, service_level_factor=factor
+                simulation,
+                service_level_factor=factor,
+                service_level_mode=mode,
             )
             if best_result is None:
                 best_result = PointForecastOptimizationResult(
@@ -297,30 +395,34 @@ def evaluate_forecast_target_costs(
 def evaluate_service_level_factor_costs(
     articles: Mapping[str, ArticleSimulationConfig],
     candidate_factors: Iterable[float],
+    service_level_mode: str | None = None,
 ) -> dict[str, dict[float, float]]:
     """Return total costs for each service-level factor per article."""
     factors = list(candidate_factors)
-    if not factors:
-        raise ValueError("Candidate factors must be provided.")
-    if any(factor < 0 for factor in factors):
-        raise ValueError("Service level factors must be non-negative.")
 
     results: dict[str, dict[float, float]] = {}
     for article_id, config in articles.items():
         policy = config.policy
         if not isinstance(
-            policy, (ForecastBasedPolicy, PointForecastOptimizationPolicy)
+            policy,
+            (ForecastBasedPolicy, PointForecastOptimizationPolicy, LeadTimeForecastOptimizationPolicy),
         ):
             raise TypeError(
                 "Service-level cost evaluation requires point-forecast policies."
             )
+        mode = _resolve_service_level_mode(policy, service_level_mode)
+        _validate_service_level_candidates(factors, mode)
         factor_costs: dict[float, float] = {}
         for factor in factors:
-            candidate_policy = PointForecastOptimizationPolicy(
+            candidate_policy = _candidate_policy_for(
+                policy,
                 forecast=policy.forecast,
                 actuals=policy.actuals,
                 lead_time=config.lead_time,
-                service_level_factor=factor,
+                factor=factor,
+                mode=mode,
+                fixed_rmse=getattr(policy, "fixed_rmse", None),
+                aggregation_window=getattr(policy, "aggregation_window", None),
             )
             simulation = simulate_replenishment(
                 periods=config.periods,
@@ -342,6 +444,7 @@ def evaluate_aggregation_and_service_level_factor_costs(
     articles: Mapping[str, ArticleSimulationConfig],
     candidate_windows: Iterable[int],
     candidate_factors: Iterable[float],
+    service_level_mode: str | None = None,
 ) -> dict[str, dict[int, dict[float, float]]]:
     """Return total costs for each window and service-level factor per article."""
     windows = list(candidate_windows)
@@ -351,69 +454,38 @@ def evaluate_aggregation_and_service_level_factor_costs(
         raise ValueError("Aggregation windows must be positive.")
 
     factors = list(candidate_factors)
-    if not factors:
-        raise ValueError("Candidate factors must be provided.")
-    if any(factor < 0 for factor in factors):
-        raise ValueError("Service level factors must be non-negative.")
 
     results: dict[str, dict[int, dict[float, float]]] = {}
     for article_id, config in articles.items():
         policy = config.policy
         if not isinstance(
-            policy, (ForecastBasedPolicy, PointForecastOptimizationPolicy)
+            policy,
+            (ForecastBasedPolicy, PointForecastOptimizationPolicy, LeadTimeForecastOptimizationPolicy),
         ):
             raise TypeError(
                 "Aggregation with service-level costs requires point-forecast policies."
             )
+        mode = _resolve_service_level_mode(policy, service_level_mode)
+        _validate_service_level_candidates(factors, mode)
         window_costs: dict[int, dict[float, float]] = {}
         for window in windows:
-            aggregated_forecast = aggregate_series(
-                policy.forecast,
-                periods=config.periods,
-                window=window,
-                extend_last=True,
-            )
-            if callable(policy.actuals):
-                aggregated_actuals = aggregate_series(
-                    policy.actuals,
-                    periods=config.periods,
-                    window=window,
-                    extend_last=False,
-                )
-            else:
-                actual_values = list(policy.actuals)
-                if not actual_values:
-                    aggregated_actuals = []
-                else:
-                    actual_periods = min(config.periods, len(actual_values))
-                    aggregated_actuals = aggregate_series(
-                        actual_values,
-                        periods=actual_periods,
-                        window=window,
-                        extend_last=False,
-                    )
-            aggregated_demand = aggregate_series(
-                config.demand,
-                periods=config.periods,
-                window=window,
-                extend_last=False,
-            )
-            aggregated_periods = aggregate_periods(config.periods, window)
-            aggregated_lead_time = aggregate_lead_time(config.lead_time, window)
-
             factor_costs: dict[float, float] = {}
             for factor in factors:
-                candidate_policy = PointForecastOptimizationPolicy(
-                    forecast=aggregated_forecast,
-                    actuals=aggregated_actuals,
-                    lead_time=aggregated_lead_time,
-                    service_level_factor=factor,
+                candidate_policy = _candidate_policy_for(
+                    policy,
+                    forecast=policy.forecast,
+                    actuals=policy.actuals,
+                    lead_time=config.lead_time,
+                    factor=factor,
+                    mode=mode,
+                    fixed_rmse=getattr(policy, "fixed_rmse", None),
+                    aggregation_window=window,
                 )
                 simulation = simulate_replenishment(
-                    periods=aggregated_periods,
-                    demand=aggregated_demand,
+                    periods=config.periods,
+                    demand=config.demand,
                     initial_on_hand=config.initial_on_hand,
-                    lead_time=aggregated_lead_time,
+                    lead_time=config.lead_time,
                     policy=candidate_policy,
                     holding_cost_per_unit=config.holding_cost_per_unit,
                     stockout_cost_per_unit=config.stockout_cost_per_unit,
@@ -457,37 +529,20 @@ def evaluate_aggregation_and_forecast_target_costs(
 
         window_costs: dict[int, dict[float | str, float]] = {}
         for window in windows:
-            aggregated_periods = aggregate_periods(config.periods, window)
-            aggregated_lead_time = aggregate_lead_time(config.lead_time, window)
-            aggregated_demand = aggregate_series(
-                config.demand,
-                periods=config.periods,
-                window=window,
-                extend_last=False,
-            )
-            aggregated_candidates = {
-                target: aggregate_series(
-                    forecast,
-                    periods=config.periods,
-                    window=window,
-                    extend_last=True,
-                )
-                for target, forecast in candidate_series.items()
-            }
-
             target_costs: dict[float | str, float] = {}
             for target in targets:
-                if target not in aggregated_candidates:
+                if target not in candidate_series:
                     raise ValueError(f"Unknown forecast target: {target}")
                 candidate_policy = PercentileForecastOptimizationPolicy(
-                    forecast=aggregated_candidates[target],
-                    lead_time=aggregated_lead_time,
+                    forecast=candidate_series[target],
+                    lead_time=config.lead_time,
+                    aggregation_window=window,
                 )
                 simulation = simulate_replenishment(
-                    periods=aggregated_periods,
-                    demand=aggregated_demand,
+                    periods=config.periods,
+                    demand=config.demand,
                     initial_on_hand=config.initial_on_hand,
-                    lead_time=aggregated_lead_time,
+                    lead_time=config.lead_time,
                     policy=candidate_policy,
                     holding_cost_per_unit=config.holding_cost_per_unit,
                     stockout_cost_per_unit=config.stockout_cost_per_unit,
@@ -523,25 +578,17 @@ def optimize_aggregation_windows(
     for article_id, config in articles.items():
         best_result: AggregationWindowOptimizationResult | None = None
         for window in windows:
-            aggregated_demand = aggregate_series(
-                config.demand,
-                periods=config.periods,
-                window=window,
-                extend_last=False,
-            )
-            aggregated_policy = aggregate_policy(
-                config.policy,
-                periods=config.periods,
-                window=window,
-                lead_time=config.lead_time,
-            )
-            aggregated_periods = aggregate_periods(config.periods, window)
-            aggregated_lead_time = aggregate_lead_time(config.lead_time, window)
+            if hasattr(config.policy, "aggregation_window"):
+                aggregated_policy = dataclass_replace(
+                    config.policy, aggregation_window=window
+                )
+            else:
+                aggregated_policy = config.policy
             simulation = simulate_replenishment(
-                periods=aggregated_periods,
-                demand=aggregated_demand,
+                periods=config.periods,
+                demand=config.demand,
                 initial_on_hand=config.initial_on_hand,
-                lead_time=aggregated_lead_time,
+                lead_time=config.lead_time,
                 policy=aggregated_policy,
                 holding_cost_per_unit=config.holding_cost_per_unit,
                 stockout_cost_per_unit=config.stockout_cost_per_unit,
@@ -581,6 +628,7 @@ def optimize_aggregation_and_service_level_factors(
     articles: Mapping[str, ArticleSimulationConfig],
     candidate_windows: Iterable[int],
     candidate_factors: Iterable[float],
+    service_level_mode: str | None = None,
 ) -> dict[str, AggregationServiceLevelOptimizationResult]:
     """Pick the aggregation window and service-level factor that minimize total cost."""
     windows = list(candidate_windows)
@@ -590,69 +638,38 @@ def optimize_aggregation_and_service_level_factors(
         raise ValueError("Aggregation windows must be positive.")
 
     factors = list(candidate_factors)
-    if not factors:
-        raise ValueError("Candidate factors must be provided.")
-    if any(factor < 0 for factor in factors):
-        raise ValueError("Service level factors must be non-negative.")
 
     results: dict[str, AggregationServiceLevelOptimizationResult] = {}
     for article_id, config in articles.items():
         policy = config.policy
         if not isinstance(
-            policy, (ForecastBasedPolicy, PointForecastOptimizationPolicy)
+            policy,
+            (ForecastBasedPolicy, PointForecastOptimizationPolicy, LeadTimeForecastOptimizationPolicy),
         ):
             raise TypeError(
                 "Aggregation with service-level optimization requires point-forecast policies."
             )
+        mode = _resolve_service_level_mode(policy, service_level_mode)
+        _validate_service_level_candidates(factors, mode)
 
         best_result: AggregationServiceLevelOptimizationResult | None = None
         for window in windows:
-            aggregated_forecast = aggregate_series(
-                policy.forecast,
-                periods=config.periods,
-                window=window,
-                extend_last=True,
-            )
-            if callable(policy.actuals):
-                aggregated_actuals = aggregate_series(
-                    policy.actuals,
-                    periods=config.periods,
-                    window=window,
-                    extend_last=False,
-                )
-            else:
-                actual_values = list(policy.actuals)
-                if not actual_values:
-                    aggregated_actuals = []
-                else:
-                    actual_periods = min(config.periods, len(actual_values))
-                    aggregated_actuals = aggregate_series(
-                        actual_values,
-                        periods=actual_periods,
-                        window=window,
-                        extend_last=False,
-                    )
-            aggregated_demand = aggregate_series(
-                config.demand,
-                periods=config.periods,
-                window=window,
-                extend_last=False,
-            )
-            aggregated_periods = aggregate_periods(config.periods, window)
-            aggregated_lead_time = aggregate_lead_time(config.lead_time, window)
-
             for factor in factors:
-                candidate_policy = PointForecastOptimizationPolicy(
-                    forecast=aggregated_forecast,
-                    actuals=aggregated_actuals,
-                    lead_time=aggregated_lead_time,
-                    service_level_factor=factor,
+                candidate_policy = _candidate_policy_for(
+                    policy,
+                    forecast=policy.forecast,
+                    actuals=policy.actuals,
+                    lead_time=config.lead_time,
+                    factor=factor,
+                    mode=mode,
+                    fixed_rmse=getattr(policy, "fixed_rmse", None),
+                    aggregation_window=window,
                 )
                 simulation = simulate_replenishment(
-                    periods=aggregated_periods,
-                    demand=aggregated_demand,
+                    periods=config.periods,
+                    demand=config.demand,
                     initial_on_hand=config.initial_on_hand,
-                    lead_time=aggregated_lead_time,
+                    lead_time=config.lead_time,
                     policy=candidate_policy,
                     holding_cost_per_unit=config.holding_cost_per_unit,
                     stockout_cost_per_unit=config.stockout_cost_per_unit,
@@ -662,6 +679,7 @@ def optimize_aggregation_and_service_level_factors(
                 simulation = _attach_metadata(
                     simulation,
                     service_level_factor=factor,
+                    service_level_mode=mode,
                     aggregation_window=window,
                 )
                 candidate = AggregationServiceLevelOptimizationResult(
@@ -717,36 +735,19 @@ def optimize_aggregation_and_forecast_targets(
 
         best_result: AggregationForecastTargetOptimizationResult | None = None
         for window in windows:
-            aggregated_periods = aggregate_periods(config.periods, window)
-            aggregated_lead_time = aggregate_lead_time(config.lead_time, window)
-            aggregated_demand = aggregate_series(
-                config.demand,
-                periods=config.periods,
-                window=window,
-                extend_last=False,
-            )
-            aggregated_candidates = {
-                target: aggregate_series(
-                    forecast,
-                    periods=config.periods,
-                    window=window,
-                    extend_last=True,
-                )
-                for target, forecast in candidate_series.items()
-            }
-
             for target in targets:
-                if target not in aggregated_candidates:
+                if target not in candidate_series:
                     raise ValueError(f"Unknown forecast target: {target}")
                 candidate_policy = PercentileForecastOptimizationPolicy(
-                    forecast=aggregated_candidates[target],
-                    lead_time=aggregated_lead_time,
+                    forecast=candidate_series[target],
+                    lead_time=config.lead_time,
+                    aggregation_window=window,
                 )
                 simulation = simulate_replenishment(
-                    periods=aggregated_periods,
-                    demand=aggregated_demand,
+                    periods=config.periods,
+                    demand=config.demand,
                     initial_on_hand=config.initial_on_hand,
-                    lead_time=aggregated_lead_time,
+                    lead_time=config.lead_time,
                     policy=candidate_policy,
                     holding_cost_per_unit=config.holding_cost_per_unit,
                     stockout_cost_per_unit=config.stockout_cost_per_unit,

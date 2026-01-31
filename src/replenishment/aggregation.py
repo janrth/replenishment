@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import replace as dataclass_replace
 import math
 
 from .policies import (
     ForecastBasedPolicy,
     ForecastSeriesPolicy,
+    LeadTimeForecastOptimizationPolicy,
     PercentileForecastOptimizationPolicy,
     PointForecastOptimizationPolicy,
 )
@@ -65,6 +67,40 @@ def aggregate_policy(
     window: int,
     lead_time: int,
 ) -> OrderingPolicy:
+    if isinstance(policy, LeadTimeForecastOptimizationPolicy):
+        aggregated_forecast = aggregate_series(
+            policy.forecast,
+            periods=periods,
+            window=window,
+            extend_last=True,
+        )
+        if callable(policy.actuals):
+            aggregated_actuals = aggregate_series(
+                policy.actuals,
+                periods=periods,
+                window=window,
+                extend_last=False,
+            )
+        else:
+            actual_values = list(policy.actuals)
+            aggregated_actuals = (
+                []
+                if not actual_values
+                else aggregate_series(
+                    actual_values,
+                    periods=periods,
+                    window=window,
+                    extend_last=False,
+                )
+            )
+        return LeadTimeForecastOptimizationPolicy(
+            forecast=aggregated_forecast,
+            actuals=aggregated_actuals,
+            lead_time=aggregate_lead_time(lead_time, window),
+            service_level_factor=policy.service_level_factor,
+            service_level_mode=policy.service_level_mode,
+            fixed_rmse=policy.fixed_rmse,
+        )
     if isinstance(policy, (ForecastBasedPolicy, PointForecastOptimizationPolicy)):
         aggregated_forecast = aggregate_series(
             policy.forecast,
@@ -96,6 +132,8 @@ def aggregate_policy(
             actuals=aggregated_actuals,
             lead_time=aggregate_lead_time(lead_time, window),
             service_level_factor=policy.service_level_factor,
+            service_level_mode=policy.service_level_mode,
+            fixed_rmse=policy.fixed_rmse,
         )
     if isinstance(
         policy, (ForecastSeriesPolicy, PercentileForecastOptimizationPolicy)
@@ -128,26 +166,18 @@ def simulate_replenishment_with_aggregation(
 ):
     from .simulation import simulate_replenishment
 
-    aggregated_demand = aggregate_series(
-        demand,
-        periods=periods,
-        window=aggregation_window,
-        extend_last=False,
-    )
-    aggregated_policy = aggregate_policy(
-        policy,
-        periods=periods,
-        window=aggregation_window,
-        lead_time=lead_time,
-    )
-    aggregated_periods = aggregate_periods(periods, aggregation_window)
-    aggregated_lead_time = aggregate_lead_time(lead_time, aggregation_window)
+    if hasattr(policy, "aggregation_window"):
+        aggregated_policy = dataclass_replace(
+            policy, aggregation_window=aggregation_window
+        )
+    else:
+        aggregated_policy = policy
 
     simulation = simulate_replenishment(
-        periods=aggregated_periods,
-        demand=aggregated_demand,
+        periods=periods,
+        demand=demand,
         initial_on_hand=initial_on_hand,
-        lead_time=aggregated_lead_time,
+        lead_time=lead_time,
         policy=aggregated_policy,
         holding_cost_per_unit=holding_cost_per_unit,
         stockout_cost_per_unit=stockout_cost_per_unit,
@@ -159,11 +189,17 @@ def simulate_replenishment_with_aggregation(
         if isinstance(aggregated_policy, PointForecastOptimizationPolicy)
         else None
     )
+    service_level_mode = (
+        aggregated_policy.service_level_mode
+        if isinstance(aggregated_policy, PointForecastOptimizationPolicy)
+        else None
+    )
     return SimulationResult(
         snapshots=simulation.snapshots,
         summary=simulation.summary,
         metadata=SimulationMetadata(
             service_level_factor=service_level_factor,
+            service_level_mode=service_level_mode,
             aggregation_window=aggregation_window,
         ),
     )

@@ -55,6 +55,7 @@ class SimulationSummary:
 @dataclass(frozen=True)
 class SimulationMetadata:
     service_level_factor: float | None = None
+    service_level_mode: str | None = None
     aggregation_window: int | None = None
     percentile_target: float | str | None = None
 
