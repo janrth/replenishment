@@ -17,6 +17,8 @@ from .policies import (
     LeadTimeForecastOptimizationPolicy,
     PercentileForecastOptimizationPolicy,
     PointForecastOptimizationPolicy,
+    RopPercentileForecastOptimizationPolicy,
+    RopPointForecastOptimizationPolicy,
 )
 from .service_levels import normalize_service_level_mode
 from .simulation import (
@@ -181,7 +183,12 @@ def _validate_service_level_candidates(
 
 
 def _candidate_policy_for(
-    policy: ForecastBasedPolicy | PointForecastOptimizationPolicy | LeadTimeForecastOptimizationPolicy,
+    policy: (
+        ForecastBasedPolicy
+        | PointForecastOptimizationPolicy
+        | LeadTimeForecastOptimizationPolicy
+        | RopPointForecastOptimizationPolicy
+    ),
     *,
     forecast: Iterable[int] | DemandModel,
     actuals: Iterable[int] | DemandModel,
@@ -190,9 +197,27 @@ def _candidate_policy_for(
     mode: str,
     fixed_rmse: float | None = None,
     aggregation_window: int | None = None,
-) -> PointForecastOptimizationPolicy | LeadTimeForecastOptimizationPolicy:
+) -> (
+    PointForecastOptimizationPolicy
+    | LeadTimeForecastOptimizationPolicy
+    | RopPointForecastOptimizationPolicy
+):
     if isinstance(policy, LeadTimeForecastOptimizationPolicy):
         return LeadTimeForecastOptimizationPolicy(
+            forecast=forecast,
+            actuals=actuals,
+            lead_time=lead_time,
+            aggregation_window=(
+                aggregation_window
+                if aggregation_window is not None
+                else policy.aggregation_window
+            ),
+            service_level_factor=factor,
+            service_level_mode=mode,
+            fixed_rmse=fixed_rmse,
+        )
+    if isinstance(policy, RopPointForecastOptimizationPolicy):
+        return RopPointForecastOptimizationPolicy(
             forecast=forecast,
             actuals=actuals,
             lead_time=lead_time,
@@ -233,7 +258,12 @@ def optimize_service_level_factors(
         policy = config.policy
         if not isinstance(
             policy,
-            (ForecastBasedPolicy, PointForecastOptimizationPolicy, LeadTimeForecastOptimizationPolicy),
+            (
+                ForecastBasedPolicy,
+                PointForecastOptimizationPolicy,
+                LeadTimeForecastOptimizationPolicy,
+                RopPointForecastOptimizationPolicy,
+            ),
         ):
             raise TypeError(
                 "Point forecast optimization requires point-forecast policies."
@@ -296,6 +326,8 @@ def point_forecast_optimisation(
 def optimize_forecast_targets(
     articles: Mapping[str, ForecastCandidatesConfig],
     candidate_targets: Iterable[float | str] | None = None,
+    *,
+    policy_mode: str = "base_stock",
 ) -> dict[str, PercentileForecastOptimizationResult]:
     """Pick the percentile forecast candidate that minimizes total cost."""
     results: dict[str, PercentileForecastOptimizationResult] = {}
@@ -314,10 +346,18 @@ def optimize_forecast_targets(
         for target in targets:
             if target not in config.forecast_candidates:
                 raise ValueError(f"Unknown forecast target: {target}")
-            candidate_policy = PercentileForecastOptimizationPolicy(
-                forecast=config.forecast_candidates[target],
-                lead_time=config.lead_time,
-            )
+            if policy_mode == "rop":
+                candidate_policy = RopPercentileForecastOptimizationPolicy(
+                    forecast=config.forecast_candidates[target],
+                    lead_time=config.lead_time,
+                )
+            elif policy_mode == "base_stock":
+                candidate_policy = PercentileForecastOptimizationPolicy(
+                    forecast=config.forecast_candidates[target],
+                    lead_time=config.lead_time,
+                )
+            else:
+                raise ValueError("policy_mode must be 'base_stock' or 'rop'.")
             simulation = simulate_replenishment(
                 periods=config.periods,
                 demand=config.demand,
@@ -354,6 +394,8 @@ def optimize_forecast_targets(
 def evaluate_forecast_target_costs(
     articles: Mapping[str, ForecastCandidatesConfig],
     candidate_targets: Iterable[float | str] | None = None,
+    *,
+    policy_mode: str = "base_stock",
 ) -> dict[str, dict[float | str, float]]:
     """Return total costs for each forecast candidate per article."""
     results: dict[str, dict[float | str, float]] = {}
@@ -372,10 +414,18 @@ def evaluate_forecast_target_costs(
         for target in targets:
             if target not in config.forecast_candidates:
                 raise ValueError(f"Unknown forecast target: {target}")
-            candidate_policy = PercentileForecastOptimizationPolicy(
-                forecast=config.forecast_candidates[target],
-                lead_time=config.lead_time,
-            )
+            if policy_mode == "rop":
+                candidate_policy = RopPercentileForecastOptimizationPolicy(
+                    forecast=config.forecast_candidates[target],
+                    lead_time=config.lead_time,
+                )
+            elif policy_mode == "base_stock":
+                candidate_policy = PercentileForecastOptimizationPolicy(
+                    forecast=config.forecast_candidates[target],
+                    lead_time=config.lead_time,
+                )
+            else:
+                raise ValueError("policy_mode must be 'base_stock' or 'rop'.")
             simulation = simulate_replenishment(
                 periods=config.periods,
                 demand=config.demand,
@@ -405,7 +455,12 @@ def evaluate_service_level_factor_costs(
         policy = config.policy
         if not isinstance(
             policy,
-            (ForecastBasedPolicy, PointForecastOptimizationPolicy, LeadTimeForecastOptimizationPolicy),
+            (
+                ForecastBasedPolicy,
+                PointForecastOptimizationPolicy,
+                LeadTimeForecastOptimizationPolicy,
+                RopPointForecastOptimizationPolicy,
+            ),
         ):
             raise TypeError(
                 "Service-level cost evaluation requires point-forecast policies."
@@ -460,7 +515,12 @@ def evaluate_aggregation_and_service_level_factor_costs(
         policy = config.policy
         if not isinstance(
             policy,
-            (ForecastBasedPolicy, PointForecastOptimizationPolicy, LeadTimeForecastOptimizationPolicy),
+            (
+                ForecastBasedPolicy,
+                PointForecastOptimizationPolicy,
+                LeadTimeForecastOptimizationPolicy,
+                RopPointForecastOptimizationPolicy,
+            ),
         ):
             raise TypeError(
                 "Aggregation with service-level costs requires point-forecast policies."
@@ -502,6 +562,8 @@ def evaluate_aggregation_and_forecast_target_costs(
     articles: Mapping[str, ForecastCandidatesConfig],
     candidate_windows: Iterable[int],
     candidate_targets: Iterable[float | str] | None = None,
+    *,
+    policy_mode: str = "base_stock",
 ) -> dict[str, dict[int, dict[float | str, float]]]:
     """Return total costs for each window and forecast target per article."""
     windows = list(candidate_windows)
@@ -529,20 +591,43 @@ def evaluate_aggregation_and_forecast_target_costs(
 
         window_costs: dict[int, dict[float | str, float]] = {}
         for window in windows:
+            aggregated_demand = aggregate_series(
+                config.demand,
+                periods=config.periods,
+                window=window,
+                extend_last=False,
+            )
+            aggregated_periods = aggregate_periods(config.periods, window)
+            aggregated_lead_time = aggregate_lead_time(config.lead_time, window)
             target_costs: dict[float | str, float] = {}
             for target in targets:
                 if target not in candidate_series:
                     raise ValueError(f"Unknown forecast target: {target}")
-                candidate_policy = PercentileForecastOptimizationPolicy(
-                    forecast=candidate_series[target],
-                    lead_time=config.lead_time,
-                    aggregation_window=window,
-                )
-                simulation = simulate_replenishment(
+                aggregated_forecast = aggregate_series(
+                    candidate_series[target],
                     periods=config.periods,
-                    demand=config.demand,
+                    window=window,
+                    extend_last=True,
+                )
+                if policy_mode == "rop":
+                    candidate_policy = RopPercentileForecastOptimizationPolicy(
+                        forecast=aggregated_forecast,
+                        lead_time=aggregated_lead_time,
+                        aggregation_window=1,
+                    )
+                elif policy_mode == "base_stock":
+                    candidate_policy = PercentileForecastOptimizationPolicy(
+                        forecast=aggregated_forecast,
+                        lead_time=aggregated_lead_time,
+                        aggregation_window=1,
+                    )
+                else:
+                    raise ValueError("policy_mode must be 'base_stock' or 'rop'.")
+                simulation = simulate_replenishment(
+                    periods=aggregated_periods,
+                    demand=aggregated_demand,
                     initial_on_hand=config.initial_on_hand,
-                    lead_time=config.lead_time,
+                    lead_time=aggregated_lead_time,
                     policy=candidate_policy,
                     holding_cost_per_unit=config.holding_cost_per_unit,
                     stockout_cost_per_unit=config.stockout_cost_per_unit,
@@ -558,9 +643,13 @@ def evaluate_aggregation_and_forecast_target_costs(
 def percentile_forecast_optimisation(
     articles: Mapping[str, ForecastCandidatesConfig],
     candidate_targets: Iterable[float | str] | None = None,
+    *,
+    policy_mode: str = "base_stock",
 ) -> dict[str, PercentileForecastOptimizationResult]:
     """Alias for optimizing percentile forecast targets without safety stock."""
-    return optimize_forecast_targets(articles, candidate_targets)
+    return optimize_forecast_targets(
+        articles, candidate_targets, policy_mode=policy_mode
+    )
 
 
 def optimize_aggregation_windows(
@@ -708,6 +797,8 @@ def optimize_aggregation_and_forecast_targets(
     articles: Mapping[str, ForecastCandidatesConfig],
     candidate_windows: Iterable[int],
     candidate_targets: Iterable[float | str] | None = None,
+    *,
+    policy_mode: str = "base_stock",
 ) -> dict[str, AggregationForecastTargetOptimizationResult]:
     """Pick the aggregation window and forecast target that minimize total cost."""
     windows = list(candidate_windows)
@@ -735,19 +826,42 @@ def optimize_aggregation_and_forecast_targets(
 
         best_result: AggregationForecastTargetOptimizationResult | None = None
         for window in windows:
+            aggregated_demand = aggregate_series(
+                config.demand,
+                periods=config.periods,
+                window=window,
+                extend_last=False,
+            )
+            aggregated_periods = aggregate_periods(config.periods, window)
+            aggregated_lead_time = aggregate_lead_time(config.lead_time, window)
             for target in targets:
                 if target not in candidate_series:
                     raise ValueError(f"Unknown forecast target: {target}")
-                candidate_policy = PercentileForecastOptimizationPolicy(
-                    forecast=candidate_series[target],
-                    lead_time=config.lead_time,
-                    aggregation_window=window,
-                )
-                simulation = simulate_replenishment(
+                aggregated_forecast = aggregate_series(
+                    candidate_series[target],
                     periods=config.periods,
-                    demand=config.demand,
+                    window=window,
+                    extend_last=True,
+                )
+                if policy_mode == "rop":
+                    candidate_policy = RopPercentileForecastOptimizationPolicy(
+                        forecast=aggregated_forecast,
+                        lead_time=aggregated_lead_time,
+                        aggregation_window=1,
+                    )
+                elif policy_mode == "base_stock":
+                    candidate_policy = PercentileForecastOptimizationPolicy(
+                        forecast=aggregated_forecast,
+                        lead_time=aggregated_lead_time,
+                        aggregation_window=1,
+                    )
+                else:
+                    raise ValueError("policy_mode must be 'base_stock' or 'rop'.")
+                simulation = simulate_replenishment(
+                    periods=aggregated_periods,
+                    demand=aggregated_demand,
                     initial_on_hand=config.initial_on_hand,
-                    lead_time=config.lead_time,
+                    lead_time=aggregated_lead_time,
                     policy=candidate_policy,
                     holding_cost_per_unit=config.holding_cost_per_unit,
                     stockout_cost_per_unit=config.stockout_cost_per_unit,

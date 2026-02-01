@@ -24,7 +24,7 @@ class InventoryState:
 
     @property
     def inventory_position(self) -> int:
-        return self.on_hand + self.on_order - self.backorders
+        return self.on_hand + self.on_order
 
 
 @dataclass(frozen=True)
@@ -133,11 +133,6 @@ def simulate_replenishment(
     for period in range(periods):
         received = pipeline.pop(0) if lead_time > 0 else 0
         on_hand += received
-        if backorders:
-            fulfilled_backorders = min(on_hand, backorders)
-            on_hand -= fulfilled_backorders
-            backorders -= fulfilled_backorders
-
         period_demand = demand_model(period)
         total_demand += period_demand
 
@@ -145,7 +140,6 @@ def simulate_replenishment(
         on_hand -= fulfilled
         unmet = period_demand - fulfilled
         if unmet:
-            backorders += unmet
             total_backorders += unmet
 
         on_order = sum(pipeline)
@@ -153,7 +147,7 @@ def simulate_replenishment(
             period=period,
             on_hand=on_hand,
             on_order=on_order,
-            backorders=backorders,
+            backorders=0,
         )
         order_qty = max(0, policy.order_quantity_for(state))
         if order_qty > 0:
@@ -176,7 +170,7 @@ def simulate_replenishment(
                 demand=period_demand,
                 received=received,
                 ending_on_hand=on_hand,
-                backorders=backorders,
+                backorders=0,
                 order_placed=order_qty,
                 on_order=on_order,
             )

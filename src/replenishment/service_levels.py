@@ -7,6 +7,7 @@ import math
 SERVICE_LEVEL_MODE_FACTOR = "factor"
 SERVICE_LEVEL_MODE_SERVICE_LEVEL = "service_level"
 SERVICE_LEVEL_MODE_STOCKOUT_PROBABILITY = "stockout_probability"
+SERVICE_LEVEL_MODE_FILL_RATE = "fill_rate"
 
 _MODE_ALIASES = {
     SERVICE_LEVEL_MODE_FACTOR: SERVICE_LEVEL_MODE_FACTOR,
@@ -18,6 +19,9 @@ _MODE_ALIASES = {
     SERVICE_LEVEL_MODE_STOCKOUT_PROBABILITY: SERVICE_LEVEL_MODE_STOCKOUT_PROBABILITY,
     "stockout_prob": SERVICE_LEVEL_MODE_STOCKOUT_PROBABILITY,
     "stockout": SERVICE_LEVEL_MODE_STOCKOUT_PROBABILITY,
+    SERVICE_LEVEL_MODE_FILL_RATE: SERVICE_LEVEL_MODE_FILL_RATE,
+    "fillrate": SERVICE_LEVEL_MODE_FILL_RATE,
+    "fill_rate": SERVICE_LEVEL_MODE_FILL_RATE,
 }
 
 
@@ -110,7 +114,53 @@ def service_level_multiplier(value: float, mode: str | None = None) -> float:
         return normal_quantile(float(value))
     if normalized == SERVICE_LEVEL_MODE_STOCKOUT_PROBABILITY:
         return normal_quantile(1.0 - float(value))
+    if normalized == SERVICE_LEVEL_MODE_FILL_RATE:
+        raise ValueError(
+            "Fill-rate mode requires demand context and is computed per period."
+        )
     raise ValueError(
         "service_level_mode must be one of: "
         f"{', '.join(sorted(_MODE_ALIASES))}."
     )
+
+
+def normal_pdf(z: float) -> float:
+    return math.exp(-0.5 * z * z) / math.sqrt(2.0 * math.pi)
+
+
+def normal_cdf(z: float) -> float:
+    return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+
+
+def normal_loss(z: float) -> float:
+    return normal_pdf(z) - z * (1.0 - normal_cdf(z))
+
+
+def inverse_normal_loss(
+    value: float, *, lower: float = -6.0, upper: float = 6.0
+) -> float:
+    if value <= 0:
+        return upper
+    max_loss = normal_loss(lower)
+    if value >= max_loss:
+        return lower
+    lo, hi = lower, upper
+    for _ in range(60):
+        mid = (lo + hi) / 2.0
+        loss = normal_loss(mid)
+        if loss > value:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2.0
+
+
+def fill_rate_z(
+    fill_rate: float, *, mean_demand: float, std_dev: float
+) -> float:
+    if not 0.0 < fill_rate < 1.0:
+        raise ValueError("Fill rate must be between 0 and 1.")
+    if std_dev <= 0 or mean_demand <= 0:
+        return 0.0
+    loss_target = (1.0 - fill_rate) * mean_demand / std_dev
+    return inverse_normal_loss(loss_target)

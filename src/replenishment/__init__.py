@@ -7,6 +7,8 @@ from .policies import (
     LeadTimeForecastOptimizationPolicy,
     PercentileForecastOptimizationPolicy,
     PointForecastOptimizationPolicy,
+    RopPercentileForecastOptimizationPolicy,
+    RopPointForecastOptimizationPolicy,
     ReorderPointPolicy,
 )
 from .aggregation import simulate_replenishment_with_aggregation
@@ -84,6 +86,8 @@ __all__ = [
     "LeadTimeForecastOptimizationPolicy",
     "PercentileForecastOptimizationPolicy",
     "PointForecastOptimizationPolicy",
+    "RopPercentileForecastOptimizationPolicy",
+    "RopPointForecastOptimizationPolicy",
     "ReorderPointPolicy",
     "SimulationMetadata",
     "SimulationResult",
