@@ -19,6 +19,13 @@ from .io import (
     standard_simulation_rows_to_dataframe,
 )
 
+try:
+    import scienceplots  # noqa: F401
+
+    plt.style.use(["science", "no-latex"])
+except ModuleNotFoundError:
+    pass
+
 
 def _normalize_rows(
     rows: Iterable[StandardSimulationRow] | pd.DataFrame,
@@ -36,6 +43,92 @@ def _normalize_decisions(
     return replenishment_decision_rows_to_dataframe(decisions, library="pandas")
 
 
+def _forecast_series(
+    rows: pd.DataFrame,
+    column: str,
+    *,
+    unique_id: str | None,
+    aggregate: bool,
+    index: pd.Index,
+) -> pd.Series:
+    series = pd.Series(dtype="float64")
+    rows = rows.copy()
+    rows["ds"] = pd.to_datetime(rows["ds"])
+    if aggregate:
+        series = (
+            rows.groupby("ds")[column]
+            .sum(min_count=1)
+            .sort_index()
+        )
+    else:
+        if unique_id is None:
+            return series.reindex(index)
+        series = (
+            rows.loc[rows["unique_id"] == unique_id]
+            .set_index("ds")[column]
+            .sort_index()
+        )
+    return series.reindex(index)
+
+
+def _backtest_mean(
+    rows: pd.DataFrame,
+    column: str,
+    *,
+    unique_id: str | None,
+    aggregate: bool,
+) -> float | None:
+    rows = rows.copy()
+    if "is_forecast" in rows.columns:
+        rows = rows.loc[rows["is_forecast"] == False]  # noqa: E712
+    if rows.empty:
+        return None
+    if aggregate:
+        series = rows.groupby("ds")[column].sum(min_count=1)
+    else:
+        if unique_id is None:
+            return None
+        series = rows.loc[rows["unique_id"] == unique_id, column]
+    mean_value = pd.to_numeric(series, errors="coerce").mean()
+    if pd.isna(mean_value):
+        return None
+    return float(mean_value)
+
+
+def _percentile_label(target: object | None) -> str | None:
+    if target is None:
+        return None
+    if isinstance(target, str):
+        label = target.strip()
+    else:
+        label = str(target)
+    if label == "":
+        return None
+    if label == "mean":
+        return "mean"
+    try:
+        value = float(label)
+    except ValueError:
+        return label
+    if 0 < value <= 1:
+        return f"p{int(round(value * 100))}"
+    return label
+
+
+def _forecast_column_for_target(
+    target: object | None, columns: pd.Index
+) -> str | None:
+    label = _percentile_label(target)
+    if label is None:
+        return None
+    if label == "mean":
+        return "forecast"
+    candidate = f"forecast_{label}"
+    if candidate in columns:
+        return candidate
+    return None
+
+
 def _prepare_timeseries(
     rows: pd.DataFrame,
     decisions: pd.DataFrame,
@@ -51,6 +144,26 @@ def _prepare_timeseries(
     rows = rows.copy()
     decisions = decisions.copy()
 
+    if "forecast_selected" not in rows.columns:
+        selected_targets: dict[str, object] = {}
+        if "percentile_target" in decisions.columns:
+            for article_id, group in decisions.groupby("unique_id"):
+                targets = group["percentile_target"].dropna()
+                if targets.empty:
+                    continue
+                mode_values = targets.mode()
+                if mode_values.empty:
+                    continue
+                selected_targets[str(article_id)] = mode_values.iloc[0]
+        rows["forecast_selected"] = rows["forecast"]
+        for article_id, target in selected_targets.items():
+            column = _forecast_column_for_target(target, rows.columns)
+            if column is None:
+                continue
+            rows.loc[rows["unique_id"] == article_id, "forecast_selected"] = rows[
+                column
+            ]
+
     rows["ds"] = pd.to_datetime(rows["ds"])
     decisions["ds"] = pd.to_datetime(decisions["ds"])
 
@@ -59,7 +172,7 @@ def _prepare_timeseries(
             rows.groupby("ds", as_index=False)
             .agg(
                 actuals=("actuals", lambda values: values.sum(min_count=1)),
-                forecast=("forecast", lambda values: values.sum(min_count=1)),
+                forecast=("forecast_selected", lambda values: values.sum(min_count=1)),
             )
             .sort_values("ds")
         )
@@ -75,8 +188,8 @@ def _prepare_timeseries(
         )
     else:
         grouped_rows = rows.loc[
-            rows["unique_id"] == unique_id, ["ds", "actuals", "forecast"]
-        ]
+            rows["unique_id"] == unique_id, ["ds", "actuals", "forecast_selected"]
+        ].rename(columns={"forecast_selected": "forecast"})
         cols = ["ds", "quantity"]
         if "incoming_stock" in decisions.columns:
             cols.append("incoming_stock")
@@ -455,6 +568,24 @@ def plot_replenishment_decisions(
     decisions_df = decisions_df.copy()
     rows_df["ds"] = pd.to_datetime(rows_df["ds"])
     decisions_df["ds"] = pd.to_datetime(decisions_df["ds"])
+    selected_targets: dict[str, object] = {}
+    if "percentile_target" in decisions_df.columns:
+        for article_id, group in decisions_df.groupby("unique_id"):
+            targets = group["percentile_target"].dropna()
+            if targets.empty:
+                continue
+            mode_values = targets.mode()
+            if mode_values.empty:
+                continue
+            selected_targets[str(article_id)] = mode_values.iloc[0]
+    rows_df["forecast_selected"] = rows_df["forecast"]
+    for article_id, target in selected_targets.items():
+        column = _forecast_column_for_target(target, rows_df.columns)
+        if column is None:
+            continue
+        rows_df.loc[rows_df["unique_id"] == article_id, "forecast_selected"] = rows_df[
+            column
+        ]
     aggregated_decisions = False
     if not decisions_df.empty:
         if aggregate:
@@ -698,21 +829,136 @@ def plot_replenishment_decisions(
         else:
             _, ax_main = plt.subplots(figsize=(10, 5))
 
+    mean_forecast_series = _forecast_series(
+        rows_df,
+        "forecast",
+        unique_id=unique_id,
+        aggregate=aggregate,
+        index=series["ds"],
+    )
+    selected_forecast_series = _forecast_series(
+        rows_df,
+        "forecast_selected",
+        unique_id=unique_id,
+        aggregate=aggregate,
+        index=series["ds"],
+    )
+
+    mean_backtest = _backtest_mean(
+        rows_df, "forecast", unique_id=unique_id, aggregate=aggregate
+    )
+    selected_backtest = _backtest_mean(
+        rows_df, "forecast_selected", unique_id=unique_id, aggregate=aggregate
+    )
+
+    target_labels: set[str] = set()
+    if "percentile_target" in decisions_df.columns:
+        if aggregate:
+            target_labels = set(
+                decisions_df["percentile_target"]
+                .dropna()
+                .apply(_percentile_label)
+                .dropna()
+                .tolist()
+            )
+        else:
+            target_labels = set(
+                decisions_df.loc[
+                    decisions_df["unique_id"] == unique_id, "percentile_target"
+                ]
+                .dropna()
+                .apply(_percentile_label)
+                .dropna()
+                .tolist()
+            )
+    selected_is_mean = not target_labels or target_labels == {"mean"}
+    if selected_is_mean:
+        base_selected_label = "Forecast (mean)"
+    elif len(target_labels) == 1:
+        base_selected_label = f"Forecast ({next(iter(target_labels))})"
+    else:
+        base_selected_label = "Forecast (selected percentiles)"
+
+    def _with_mean(label: str, mean_value: float | None) -> str:
+        if mean_value is None:
+            return label
+        return f"{label} (backtest avg={mean_value:.1f})"
+
+    mean_label = _with_mean("Forecast (mean)", mean_backtest)
+    selected_label = _with_mean(base_selected_label, selected_backtest)
+
     if ax_start is not None and start_plot_df is not None and start_stock_column:
         ax_start.plot(series["ds"], series["actuals"], label="Actuals", marker="o")
-        ax_start.plot(series["ds"], series["forecast"], label="Forecast", linestyle="--")
+        if not selected_is_mean:
+            ax_start.plot(
+                series["ds"],
+                mean_forecast_series,
+                label=mean_label,
+                linestyle="--",
+                color="tab:gray",
+            )
+        ax_start.plot(
+            series["ds"],
+            selected_forecast_series,
+            label=selected_label,
+            linestyle="--",
+            color="tab:orange",
+        )
         ax_start.plot(
             start_plot_df["ds"],
             start_plot_df[start_stock_column],
             label=start_stock_label,
             linestyle="-.",
             marker="o",
+            color="tab:green",
         )
         ax_start.set_ylabel("Units")
         ax_start.legend()
 
+    forecast_label = "Forecast"
+    if "percentile_target" in decisions_df.columns:
+        if aggregate:
+            targets = (
+                decisions_df["percentile_target"]
+                .dropna()
+                .apply(_percentile_label)
+                .dropna()
+            )
+        else:
+            targets = (
+                decisions_df.loc[
+                    decisions_df["unique_id"] == unique_id, "percentile_target"
+                ]
+                .dropna()
+                .apply(_percentile_label)
+                .dropna()
+            )
+        unique_targets = set(targets.tolist())
+        if unique_targets:
+            if unique_targets == {"mean"}:
+                forecast_label = "Forecast (mean)"
+            elif len(unique_targets) == 1:
+                target_label = next(iter(unique_targets))
+                forecast_label = f"Forecast ({target_label})"
+            else:
+                forecast_label = "Forecast (selected percentiles)"
+
     ax_main.plot(series["ds"], series["actuals"], label="Actuals", marker="o")
-    ax_main.plot(series["ds"], series["forecast"], label="Forecast", linestyle="--")
+    if not selected_is_mean:
+        ax_main.plot(
+            series["ds"],
+            mean_forecast_series,
+            label=mean_label,
+            linestyle="--",
+            color="tab:gray",
+        )
+    ax_main.plot(
+        series["ds"],
+        selected_forecast_series,
+        label=selected_label,
+        linestyle="--",
+        color="tab:orange",
+    )
     forecast_target_df: pd.DataFrame | None = None
     if uses_ending_stock:
         stock_label = "Ending stock"
@@ -720,7 +966,13 @@ def plot_replenishment_decisions(
         stock_label = "Current stock"
     else:
         stock_label = "Projected stock"
-    ax_main.plot(series["ds"], stock_series, label=stock_label, linestyle="-.")
+    ax_main.plot(
+        series["ds"],
+        stock_series,
+        label=stock_label,
+        linestyle="-.",
+        color="tab:green",
+    )
     if "forecast_quantity" in decisions_df.columns:
         forecast_values = pd.to_numeric(
             decisions_df["forecast_quantity"], errors="coerce"
@@ -791,19 +1043,9 @@ def plot_replenishment_decisions(
         safety_plot["safety_stock_per_period"] = safety_plot[
             "safety_stock_per_period"
         ].fillna(0)
-        if "forecast_quantity_lead_time" in safety_plot.columns:
-            safety_base = safety_plot["forecast_quantity_lead_time"]
-            safety_label = "Forecast + safety stock (lead time)"
-        else:
-            safety_base = safety_plot["forecast_quantity"]
-            safety_label = "Forecast + safety stock"
-        ax_main.plot(
-            safety_plot["ds"],
-            safety_base + safety_plot["safety_stock_per_period"],
-            label=safety_label,
-            linestyle="dashdot",
-            marker="s",
-        )
+        safety_base = safety_plot["forecast_quantity"]
+        target_level = safety_base + safety_plot["safety_stock_per_period"]
+        # no order-gap plot
     replenishment = series["replenishment"].fillna(0)
     decision_rows = series.loc[replenishment != 0]
     if decision_style == "line":

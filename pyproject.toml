@@ -8,6 +8,7 @@ dependencies = [
     "ipykernel>=6.31.0",
     "matplotlib>=3.8",
     "pandas>=2.0",
+    "scienceplots>=2.1.0",
 ]
 
 [project.optional-dependencies]

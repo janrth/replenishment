@@ -522,6 +522,10 @@ def test_build_replenishment_decisions_from_simulations():
         ending_stock = int(round(stock_after))
         current_stock = ending_stock
         running_stock = stock_after
+        cycle_stock = sum(forecast_values[start:end])
+        extra = start + 2 - len(forecast_values)
+        if extra > 0 and forecast_values:
+            cycle_stock += forecast_values[-1] * extra
         expected.append(
             ReplenishmentDecisionRow(
                 unique_id="A",
@@ -530,6 +534,12 @@ def test_build_replenishment_decisions_from_simulations():
                 demand=snapshot.demand,
                 forecast_quantity=forecast_quantity,
                 forecast_quantity_lead_time=forecast_quantity_lead_time,
+                reorder_point=forecast_values[start] + safety_stock_values[index],
+                order_up_to=(
+                    forecast_values[start]
+                    + safety_stock_values[index]
+                    + cycle_stock
+                ),
                 incoming_stock=snapshot.received,
                 starting_stock=starting_stock,
                 ending_stock=ending_stock,
@@ -640,6 +650,10 @@ def test_build_replenishment_decisions_from_optimization_results():
         ending_stock = int(round(stock_after))
         current_stock = ending_stock
         running_stock = stock_after
+        cycle_stock = sum(forecast_values[start:end])
+        extra = start + window - len(forecast_values)
+        if extra > 0 and forecast_values:
+            cycle_stock += forecast_values[-1] * extra
         expected.append(
             ReplenishmentDecisionRow(
                 unique_id="A",
@@ -648,6 +662,8 @@ def test_build_replenishment_decisions_from_optimization_results():
                 demand=snapshot.demand,
                 forecast_quantity=forecast_quantity,
                 forecast_quantity_lead_time=forecast_quantity_lead_time,
+                reorder_point=forecast_values[start],
+                order_up_to=forecast_values[start] + cycle_stock,
                 incoming_stock=snapshot.received,
                 starting_stock=starting_stock,
                 ending_stock=ending_stock,
@@ -734,6 +750,7 @@ def test_build_replenishment_decisions_from_simulations_with_metadata_inputs():
                 quantity=snapshot.order_placed,
                 demand=snapshot.demand,
                 forecast_quantity=None,
+                reorder_point=None,
                 incoming_stock=snapshot.received,
                 starting_stock=starting_stock,
                 ending_stock=ending_stock,
@@ -833,6 +850,12 @@ def test_build_replenishment_decisions_from_simulations_merges_metadata():
                 demand=snapshot.demand,
                 forecast_quantity=forecast_quantity,
                 forecast_quantity_lead_time=forecast_quantity_lead_time,
+                reorder_point=forecast_values[index] + safety_stock_values[index],
+                order_up_to=(
+                    forecast_values[index]
+                    + safety_stock_values[index]
+                    + forecast_values[index]
+                ),
                 incoming_stock=snapshot.received,
                 starting_stock=starting_stock,
                 ending_stock=ending_stock,

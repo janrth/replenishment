@@ -22,8 +22,12 @@ from .optimization import (
     PointForecastOptimizationResult,
     optimize_service_level_factors,
 )
-from .policies import LeadTimeForecastOptimizationPolicy, PointForecastOptimizationPolicy
-from .service_levels import service_level_multiplier
+from .policies import (
+    LeadTimeForecastOptimizationPolicy,
+    PointForecastOptimizationPolicy,
+    RopPointForecastOptimizationPolicy,
+)
+from .service_levels import fill_rate_z, normalize_service_level_mode, service_level_multiplier
 from .simulation import (
     ArticleSimulationConfig,
     SimulationResult,
@@ -74,6 +78,8 @@ class ReplenishmentDecisionRow:
     demand: int | None = None
     forecast_quantity: float | None = None
     forecast_quantity_lead_time: float | None = None
+    reorder_point: float | None = None
+    order_up_to: float | None = None
     incoming_stock: int | None = None
     starting_stock: int | None = None
     ending_stock: int | None = None
@@ -255,6 +261,8 @@ def replenishment_decision_rows_to_dicts(
             "demand": row.demand,
             "forecast_quantity": row.forecast_quantity,
             "forecast_quantity_lead_time": row.forecast_quantity_lead_time,
+            "reorder_point": row.reorder_point,
+            "order_up_to": row.order_up_to,
             "incoming_stock": row.incoming_stock,
             "starting_stock": row.starting_stock,
             "ending_stock": row.ending_stock,
@@ -378,6 +386,35 @@ def build_replenishment_decisions_from_simulations(
                     row.forecast_percentiles[target_value] for row in ordered
                 ]
         forecast_length = len(forecast_values) if forecast_values is not None else 0
+        def _sum_with_extension(
+            values: list[int], start_index: int, horizon: int
+        ) -> float:
+            if horizon <= 0 or not values:
+                return 0.0
+            if start_index >= len(values):
+                return float(values[-1]) * horizon
+            end_index = start_index + horizon
+            if end_index <= len(values):
+                return float(sum(values[start_index:end_index]))
+            total = float(sum(values[start_index:]))
+            extra = end_index - len(values)
+            if extra > 0:
+                total += float(values[-1]) * extra
+            return total
+
+        rop_forecast_values: list[int] | None = None
+        rop_lead_time = lead_time
+        if forecast_values is not None:
+            if not daily_snapshots and window > 1:
+                rop_forecast_values = aggregate_series(
+                    forecast_values,
+                    periods=len(forecast_values),
+                    window=window,
+                    extend_last=True,
+                )
+                rop_lead_time = aggregate_lead_time(lead_time, window)
+            else:
+                rop_forecast_values = forecast_values
         metadata = metadata_lookup.get(unique_id)
         if metadata is None:
             metadata = ReplenishmentDecisionMetadata(
@@ -449,13 +486,29 @@ def build_replenishment_decisions_from_simulations(
                             forecast_quantity = forecast_quantity / window
                     elif daily_snapshots:
                         forecast_quantity = forecast_values[start]
-                        target_period = start + lead_time
-                        if target_period >= forecast_length:
-                            forecast_quantity_lead_time = forecast_values[-1]
+                        start_period = start + 1
+                        horizon = max(1, lead_time)
+                        if start_period >= forecast_length:
+                            forecast_quantity_lead_time = (
+                                forecast_values[-1] * horizon
+                                if forecast_values
+                                else None
+                            )
                         else:
-                            forecast_quantity_lead_time = forecast_values[
-                                target_period
-                            ]
+                            end_period = start_period + horizon
+                            if end_period <= forecast_length:
+                                forecast_quantity_lead_time = sum(
+                                    forecast_values[start_period:end_period]
+                                )
+                            else:
+                                forecast_quantity_lead_time = sum(
+                                    forecast_values[start_period:forecast_length]
+                                )
+                                extra = end_period - forecast_length
+                                if extra > 0 and forecast_values:
+                                    forecast_quantity_lead_time += (
+                                        forecast_values[-1] * extra
+                                    )
                     else:
                         end = min(start + snapshot_window, forecast_length)
                         forecast_quantity = sum(
@@ -485,6 +538,30 @@ def build_replenishment_decisions_from_simulations(
             safety_stock = (
                 safety_stock_values[index] if safety_stock_values else None
             )
+            reorder_point = None
+            order_up_to = None
+            if rop_forecast_values is not None:
+                rop_index = (
+                    index if (not daily_snapshots and window > 1) else start
+                )
+                lead_horizon = max(0, rop_lead_time)
+                lead_demand = _sum_with_extension(
+                    rop_forecast_values, rop_index, lead_horizon
+                )
+                reorder_point = lead_demand
+                if safety_stock is not None:
+                    reorder_point += safety_stock
+                if reorder_point is not None:
+                    if not daily_snapshots and window > 1:
+                        cycle_horizon = 1
+                        cycle_index = index
+                    else:
+                        cycle_horizon = max(1, window)
+                        cycle_index = start
+                    cycle_stock = _sum_with_extension(
+                        rop_forecast_values, cycle_index, cycle_horizon
+                    )
+                    order_up_to = reorder_point + cycle_stock
             decisions.append(
                 ReplenishmentDecisionRow(
                     unique_id=unique_id,
@@ -493,6 +570,8 @@ def build_replenishment_decisions_from_simulations(
                     demand=snapshot.demand,
                     forecast_quantity=forecast_quantity,
                     forecast_quantity_lead_time=forecast_quantity_lead_time,
+                    reorder_point=reorder_point,
+                    order_up_to=order_up_to,
                     incoming_stock=snapshot.received,
                     starting_stock=starting_stock,
                     ending_stock=ending_stock,
@@ -912,6 +991,7 @@ def build_point_forecast_article_configs(
     initial_on_hand: Mapping[str, int] | int,
     service_level_factor: Mapping[str, float] | float,
     service_level_mode: Mapping[str, str] | str | None = None,
+    policy_mode: str = "base_stock",
     holding_cost_per_unit: Mapping[str, float] | float = 0.0,
     stockout_cost_per_unit: Mapping[str, float] | float = 0.0,
     order_cost_per_order: Mapping[str, float] | float = 0.0,
@@ -941,15 +1021,28 @@ def build_point_forecast_article_configs(
             raise TypeError(
                 "service_level_mode must be a string or mapping of strings."
             )
-        policy = PointForecastOptimizationPolicy(
-            forecast=forecast,
-            actuals=actuals,
-            lead_time=_resolve_value(lead_time, unique_id, "lead_time"),
-            service_level_factor=_resolve_value(
-                service_level_factor, unique_id, "service_level_factor"
-            ),
-            service_level_mode=mode_value if mode_value is not None else "factor",
-        )
+        if policy_mode == "rop":
+            policy = RopPointForecastOptimizationPolicy(
+                forecast=forecast,
+                actuals=actuals,
+                lead_time=_resolve_value(lead_time, unique_id, "lead_time"),
+                service_level_factor=_resolve_value(
+                    service_level_factor, unique_id, "service_level_factor"
+                ),
+                service_level_mode=mode_value if mode_value is not None else "factor",
+            )
+        elif policy_mode == "base_stock":
+            policy = PointForecastOptimizationPolicy(
+                forecast=forecast,
+                actuals=actuals,
+                lead_time=_resolve_value(lead_time, unique_id, "lead_time"),
+                service_level_factor=_resolve_value(
+                    service_level_factor, unique_id, "service_level_factor"
+                ),
+                service_level_mode=mode_value if mode_value is not None else "factor",
+            )
+        else:
+            raise ValueError("policy_mode must be 'base_stock' or 'rop'.")
         configs[unique_id] = ArticleSimulationConfig(
             periods=periods,
             demand=demand,
@@ -1047,6 +1140,7 @@ def build_point_forecast_article_configs_from_standard_rows(
     fixed_rmse: Mapping[str, float] | float | None = None,
     use_current_stock: bool | None = None,
     actuals_override: Mapping[str, Iterable[int]] | None = None,
+    policy_mode: str = "base_stock",
 ) -> dict[str, ArticleSimulationConfig]:
     grouped = _group_standard_rows(rows)
     configs: dict[str, ArticleSimulationConfig] = {}
@@ -1080,18 +1174,34 @@ def build_point_forecast_article_configs_from_standard_rows(
             raise TypeError(
                 "service_level_mode must be a string or mapping of strings."
             )
-        policy = PointForecastOptimizationPolicy(
-            forecast=forecast,
-            actuals=actuals,
-            lead_time=lead_time,
-            service_level_factor=_resolve_value(
-                service_level_factor, unique_id, "service_level_factor"
-            ),
-            service_level_mode=mode_value if mode_value is not None else "factor",
-            fixed_rmse=_resolve_optional_value(
-                fixed_rmse, unique_id, "fixed_rmse"
-            ),
-        )
+        if policy_mode == "rop":
+            policy = RopPointForecastOptimizationPolicy(
+                forecast=forecast,
+                actuals=actuals,
+                lead_time=lead_time,
+                service_level_factor=_resolve_value(
+                    service_level_factor, unique_id, "service_level_factor"
+                ),
+                service_level_mode=mode_value if mode_value is not None else "factor",
+                fixed_rmse=_resolve_optional_value(
+                    fixed_rmse, unique_id, "fixed_rmse"
+                ),
+            )
+        elif policy_mode == "base_stock":
+            policy = PointForecastOptimizationPolicy(
+                forecast=forecast,
+                actuals=actuals,
+                lead_time=lead_time,
+                service_level_factor=_resolve_value(
+                    service_level_factor, unique_id, "service_level_factor"
+                ),
+                service_level_mode=mode_value if mode_value is not None else "factor",
+                fixed_rmse=_resolve_optional_value(
+                    fixed_rmse, unique_id, "fixed_rmse"
+                ),
+            )
+        else:
+            raise ValueError("policy_mode must be 'base_stock' or 'rop'.")
         configs[unique_id] = ArticleSimulationConfig(
             periods=len(ordered),
             demand=demand,
@@ -1607,6 +1717,22 @@ def _safety_stock_by_period(
     window: int,
     periods: int,
 ) -> list[float]:
+    normalized_mode = normalize_service_level_mode(service_level_mode)
+    def _sum_with_extension(
+        values: list[int], start_index: int, horizon: int
+    ) -> float:
+        if horizon <= 0 or not values:
+            return 0.0
+        if start_index >= len(values):
+            return float(values[-1]) * horizon
+        end_index = start_index + horizon
+        if end_index <= len(values):
+            return float(sum(values[start_index:end_index]))
+        total = float(sum(values[start_index:]))
+        extra = end_index - len(values)
+        if extra > 0:
+            total += float(values[-1]) * extra
+        return total
     use_aggregation = window > 1 and periods < len(forecast_values)
     if use_aggregation:
         forecast_values = aggregate_series(
@@ -1630,7 +1756,9 @@ def _safety_stock_by_period(
         else lead_time
     )
     lead_time_factor = math.sqrt(horizon if horizon > 0 else 1)
-    sigma_multiplier = service_level_multiplier(sigma, service_level_mode)
+    sigma_multiplier = None
+    if normalized_mode != "fill_rate":
+        sigma_multiplier = service_level_multiplier(sigma, service_level_mode)
     safety_values: list[float] = []
     for period in range(periods):
         if fixed_rmse is not None:
@@ -1652,5 +1780,17 @@ def _safety_stock_by_period(
                     rmse = math.sqrt(
                         sum(error * error for error in errors) / len(errors)
                     )
-        safety_values.append(sigma_multiplier * rmse * lead_time_factor)
+        if normalized_mode == "fill_rate":
+            horizon = max(1, lead_time)
+            forecast_qty = _sum_with_extension(forecast_values, period, horizon)
+            std_dev = rmse * lead_time_factor
+            if std_dev <= 0 or forecast_qty <= 0:
+                safety_values.append(0.0)
+            else:
+                z_value = fill_rate_z(
+                    float(sigma), mean_demand=float(forecast_qty), std_dev=std_dev
+                )
+                safety_values.append(z_value * std_dev)
+        else:
+            safety_values.append(sigma_multiplier * rmse * lead_time_factor)
     return safety_values
