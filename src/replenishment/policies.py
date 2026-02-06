@@ -192,13 +192,13 @@ class ForecastBasedPolicy:
             return 0
         if self._service_level_mode_normalized == "fill_rate":
             horizon = max(1, self.lead_time)
-            forecast_qty = self._forecast_sum_for(state.period, horizon)
+            forecast_qty = self._forecast_sum_for(state.period + 1, horizon)
         else:
             if self.aggregation_window > 1:
                 horizon = self.lead_time + self.aggregation_window
-                forecast_qty = self._forecast_sum_for(state.period, horizon)
+                forecast_qty = self._forecast_sum_for(state.period + 1, horizon)
             else:
-                target_period = state.period + self.lead_time
+                target_period = state.period + max(1, self.lead_time)
                 forecast_qty = self._forecast_value_for(target_period)
         safety_stock = self._safety_stock(state.period)
         target = forecast_qty + safety_stock
@@ -252,9 +252,9 @@ class ForecastSeriesPolicy:
             return 0
         if self.aggregation_window > 1:
             horizon = self.lead_time + self.aggregation_window
-            forecast_qty = self._forecast_sum_for(state.period, horizon)
+            forecast_qty = self._forecast_sum_for(state.period + 1, horizon)
         else:
-            target_period = state.period + self.lead_time
+            target_period = state.period + max(1, self.lead_time)
             forecast_qty = self._forecast_value_for(target_period)
         return max(0, int(math.ceil(forecast_qty - state.inventory_position)))
 
@@ -370,13 +370,13 @@ class PointForecastOptimizationPolicy:
             return 0
         if self._service_level_mode_normalized == "fill_rate":
             horizon = max(1, self.lead_time)
-            forecast_qty = self._forecast_sum_for(state.period, horizon)
+            forecast_qty = self._forecast_sum_for(state.period + 1, horizon)
         else:
             if self.aggregation_window > 1:
                 horizon = self.lead_time + self.aggregation_window
-                forecast_qty = self._forecast_sum_for(state.period, horizon)
+                forecast_qty = self._forecast_sum_for(state.period + 1, horizon)
             else:
-                target_period = state.period + self.lead_time
+                target_period = state.period + max(1, self.lead_time)
                 forecast_qty = self._forecast_value_for(target_period)
         rmse = self._rmse(state.period)
         horizon = (
@@ -506,12 +506,12 @@ class RopPointForecastOptimizationPolicy:
             return 0
         lead_horizon = max(0, self.lead_time)
         lead_demand = (
-            self._forecast_sum_for(state.period, lead_horizon)
+            self._forecast_sum_for(state.period + 1, lead_horizon)
             if lead_horizon > 0
             else 0
         )
         cycle_horizon = max(1, self.aggregation_window)
-        cycle_stock = self._forecast_sum_for(state.period, cycle_horizon)
+        cycle_stock = self._forecast_sum_for(state.period + 1, cycle_horizon)
         rmse = self._rmse(state.period)
         lead_time_factor = math.sqrt(lead_horizon if lead_horizon > 0 else 1)
         if self._service_level_mode_normalized == "fill_rate":
@@ -782,12 +782,12 @@ class RopPercentileForecastOptimizationPolicy:
             return 0
         lead_horizon = max(0, self.lead_time)
         lead_demand = (
-            self._forecast_sum_for(state.period, lead_horizon)
+            self._forecast_sum_for(state.period + 1, lead_horizon)
             if lead_horizon > 0
             else 0
         )
         cycle_horizon = max(1, self.aggregation_window)
-        cycle_stock = self._forecast_sum_for(state.period, cycle_horizon)
+        cycle_stock = self._forecast_sum_for(state.period + 1, cycle_horizon)
         reorder_point = lead_demand
         order_up_to = reorder_point + cycle_stock
         if state.inventory_position <= reorder_point:
@@ -851,9 +851,9 @@ class EmpiricalMultiplierPolicy:
         if self.aggregation_window > 1:
             horizon = self.lead_time + self.aggregation_window
         else:
-            # Cover demand over lead time + 1 (current period)
+            # Cover demand over lead time + 1 (next period onward)
             horizon = max(1, self.lead_time + 1)
-        forecast_qty = self._forecast_sum_for(state.period, horizon)
+        forecast_qty = self._forecast_sum_for(state.period + 1, horizon)
         target = forecast_qty * self.multiplier
         return max(0, int(math.ceil(target - state.inventory_position)))
 
@@ -913,12 +913,12 @@ class RopEmpiricalMultiplierPolicy:
             return 0
         lead_horizon = max(0, self.lead_time)
         lead_demand = (
-            self._forecast_sum_for(state.period, lead_horizon)
+            self._forecast_sum_for(state.period + 1, lead_horizon)
             if lead_horizon > 0
             else 0
         )
         cycle_horizon = max(1, self.aggregation_window)
-        cycle_stock = self._forecast_sum_for(state.period, cycle_horizon)
+        cycle_stock = self._forecast_sum_for(state.period + 1, cycle_horizon)
         # Apply multiplier to both lead demand and cycle stock
         reorder_point = lead_demand * self.multiplier
         order_up_to = (lead_demand + cycle_stock) * self.multiplier
