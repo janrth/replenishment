@@ -8,6 +8,8 @@ dependencies = [
     "ipykernel>=6.31.0",
     "matplotlib>=3.8",
     "pandas>=2.0",
+    "polars>=1.36.1",
+    "pyarrow>=21.0.0",
     "scienceplots>=2.1.0",
 ]
 
