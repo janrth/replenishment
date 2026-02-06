@@ -966,19 +966,23 @@ def calibrate_empirical_multipliers(
     results: dict[str, EmpiricalCalibrationResult] = {}
 
     for article_id, config in articles.items():
+        # Cache iterables to avoid exhaustion when looping over multipliers
+        demand = config.demand if callable(config.demand) else list(config.demand)
+        forecast = config.forecast if callable(config.forecast) else list(config.forecast)
+
         best_result: EmpiricalCalibrationResult | None = None
         fallback_result: EmpiricalCalibrationResult | None = None
 
         for multiplier in multipliers:
             if policy_mode == "rop":
                 candidate_policy = RopEmpiricalMultiplierPolicy(
-                    forecast=config.forecast,
+                    forecast=forecast,
                     lead_time=config.lead_time,
                     multiplier=multiplier,
                 )
             elif policy_mode == "base_stock":
                 candidate_policy = EmpiricalMultiplierPolicy(
-                    forecast=config.forecast,
+                    forecast=forecast,
                     lead_time=config.lead_time,
                     multiplier=multiplier,
                 )
@@ -987,7 +991,7 @@ def calibrate_empirical_multipliers(
 
             simulation = simulate_replenishment(
                 periods=config.periods,
-                demand=config.demand,
+                demand=demand,
                 initial_on_hand=config.initial_on_hand,
                 lead_time=config.lead_time,
                 policy=candidate_policy,
@@ -1059,18 +1063,22 @@ def evaluate_empirical_multiplier_lost_sales(
     results: dict[str, dict[float, float]] = {}
 
     for article_id, config in articles.items():
+        # Cache iterables to avoid exhaustion when looping over multipliers
+        demand = config.demand if callable(config.demand) else list(config.demand)
+        forecast = config.forecast if callable(config.forecast) else list(config.forecast)
+
         multiplier_rates: dict[float, float] = {}
 
         for multiplier in multipliers:
             if policy_mode == "rop":
                 candidate_policy = RopEmpiricalMultiplierPolicy(
-                    forecast=config.forecast,
+                    forecast=forecast,
                     lead_time=config.lead_time,
                     multiplier=multiplier,
                 )
             elif policy_mode == "base_stock":
                 candidate_policy = EmpiricalMultiplierPolicy(
-                    forecast=config.forecast,
+                    forecast=forecast,
                     lead_time=config.lead_time,
                     multiplier=multiplier,
                 )
@@ -1079,7 +1087,7 @@ def evaluate_empirical_multiplier_lost_sales(
 
             simulation = simulate_replenishment(
                 periods=config.periods,
-                demand=config.demand,
+                demand=demand,
                 initial_on_hand=config.initial_on_hand,
                 lead_time=config.lead_time,
                 policy=candidate_policy,
