@@ -793,3 +793,135 @@ class RopPercentileForecastOptimizationPolicy:
         if state.inventory_position <= reorder_point:
             return max(0, int(math.ceil(order_up_to - state.inventory_position)))
         return 0
+
+
+@dataclass(frozen=True)
+class EmpiricalMultiplierPolicy:
+    """Order mean forecast multiplied by a calibrated factor.
+
+    This policy uses a simple multiplier on the mean forecast to determine
+    order quantities. The multiplier is typically calibrated empirically
+    to achieve a target lost sales rate during backtesting.
+    """
+
+    forecast: Iterable[int] | DemandModel
+    lead_time: int = 0
+    aggregation_window: int = 1
+    multiplier: float = 1.0
+    _forecast_model: DemandModel = field(init=False, repr=False)
+    _forecast_values: list[int] | None = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.lead_time < 0:
+            raise ValueError("Lead time cannot be negative.")
+        if self.aggregation_window <= 0:
+            raise ValueError("Aggregation window must be positive.")
+        if self.multiplier < 0:
+            raise ValueError("Multiplier must be non-negative.")
+        if callable(self.forecast):
+            object.__setattr__(self, "_forecast_values", None)
+            object.__setattr__(self, "_forecast_model", self.forecast)
+        else:
+            forecast_values = list(self.forecast)
+            object.__setattr__(self, "_forecast_values", forecast_values)
+            object.__setattr__(self, "_forecast_model", _normalize_series(forecast_values))
+
+    def _forecast_value_for(self, period: int) -> int:
+        if period < 0:
+            raise IndexError("Series period out of range.")
+        if self._forecast_values is None:
+            return self._forecast_model(period)
+        if not self._forecast_values:
+            raise IndexError("Series period out of range.")
+        if period >= len(self._forecast_values):
+            return self._forecast_values[-1]
+        return self._forecast_values[period]
+
+    def _forecast_sum_for(self, period: int, horizon: int) -> int:
+        if horizon <= 0:
+            return 0
+        return sum(
+            self._forecast_value_for(period + offset)
+            for offset in range(horizon)
+        )
+
+    def order_quantity_for(self, state: InventoryState) -> int:
+        if self.aggregation_window > 1 and state.period % self.aggregation_window != 0:
+            return 0
+        if self.aggregation_window > 1:
+            horizon = self.lead_time + self.aggregation_window
+        else:
+            # Cover demand over lead time + 1 (current period)
+            horizon = max(1, self.lead_time + 1)
+        forecast_qty = self._forecast_sum_for(state.period, horizon)
+        target = forecast_qty * self.multiplier
+        return max(0, int(math.ceil(target - state.inventory_position)))
+
+
+@dataclass(frozen=True)
+class RopEmpiricalMultiplierPolicy:
+    """Reorder-point policy using mean forecast multiplied by a calibrated factor.
+
+    This policy uses a simple multiplier on the mean forecast to determine
+    reorder points and order-up-to levels. The multiplier is typically
+    calibrated empirically to achieve a target lost sales rate.
+    """
+
+    forecast: Iterable[int] | DemandModel
+    lead_time: int = 0
+    aggregation_window: int = 1
+    multiplier: float = 1.0
+    _forecast_model: DemandModel = field(init=False, repr=False)
+    _forecast_values: list[int] | None = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.lead_time < 0:
+            raise ValueError("Lead time cannot be negative.")
+        if self.aggregation_window <= 0:
+            raise ValueError("Aggregation window must be positive.")
+        if self.multiplier < 0:
+            raise ValueError("Multiplier must be non-negative.")
+        if callable(self.forecast):
+            object.__setattr__(self, "_forecast_values", None)
+            object.__setattr__(self, "_forecast_model", self.forecast)
+        else:
+            forecast_values = list(self.forecast)
+            object.__setattr__(self, "_forecast_values", forecast_values)
+            object.__setattr__(self, "_forecast_model", _normalize_series(forecast_values))
+
+    def _forecast_value_for(self, period: int) -> int:
+        if period < 0:
+            raise IndexError("Series period out of range.")
+        if self._forecast_values is None:
+            return self._forecast_model(period)
+        if not self._forecast_values:
+            raise IndexError("Series period out of range.")
+        if period >= len(self._forecast_values):
+            return self._forecast_values[-1]
+        return self._forecast_values[period]
+
+    def _forecast_sum_for(self, period: int, horizon: int) -> int:
+        if horizon <= 0:
+            return 0
+        return sum(
+            self._forecast_value_for(period + offset)
+            for offset in range(horizon)
+        )
+
+    def order_quantity_for(self, state: InventoryState) -> int:
+        if self.aggregation_window > 1 and state.period % self.aggregation_window != 0:
+            return 0
+        lead_horizon = max(0, self.lead_time)
+        lead_demand = (
+            self._forecast_sum_for(state.period, lead_horizon)
+            if lead_horizon > 0
+            else 0
+        )
+        cycle_horizon = max(1, self.aggregation_window)
+        cycle_stock = self._forecast_sum_for(state.period, cycle_horizon)
+        # Apply multiplier to both lead demand and cycle stock
+        reorder_point = lead_demand * self.multiplier
+        order_up_to = (lead_demand + cycle_stock) * self.multiplier
+        if state.inventory_position <= reorder_point:
+            return max(0, int(math.ceil(order_up_to - state.inventory_position)))
+        return 0
