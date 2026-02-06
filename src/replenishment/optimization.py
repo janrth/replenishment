@@ -12,11 +12,13 @@ from .aggregation import (
     aggregate_series,
 )
 from .policies import (
+    EmpiricalMultiplierPolicy,
     ForecastBasedPolicy,
     ForecastSeriesPolicy,
     LeadTimeForecastOptimizationPolicy,
     PercentileForecastOptimizationPolicy,
     PointForecastOptimizationPolicy,
+    RopEmpiricalMultiplierPolicy,
     RopPercentileForecastOptimizationPolicy,
     RopPointForecastOptimizationPolicy,
 )
@@ -891,5 +893,219 @@ def optimize_aggregation_and_forecast_targets(
         if best_result is None:
             raise RuntimeError("No optimization result computed.")
         results[article_id] = best_result
+
+    return results
+
+
+@dataclass(frozen=True)
+class EmpiricalCalibrationConfig:
+    """Inputs for empirical multiplier calibration.
+
+    The calibration will find the smallest multiplier that achieves
+    the target lost sales rate during backtesting.
+    """
+
+    periods: int
+    demand: Iterable[int] | DemandModel
+    forecast: Iterable[int] | DemandModel
+    initial_on_hand: int
+    lead_time: int
+    holding_cost_per_unit: float = 0.0
+    stockout_cost_per_unit: float = 0.0
+    order_cost_per_order: float = 0.0
+    order_cost_per_unit: float = 0.0
+
+
+@dataclass(frozen=True)
+class EmpiricalCalibrationResult:
+    """Result of empirical multiplier calibration."""
+
+    multiplier: float
+    lost_sales_rate: float
+    policy: EmpiricalMultiplierPolicy | RopEmpiricalMultiplierPolicy
+    simulation: SimulationResult
+
+
+def calibrate_empirical_multipliers(
+    articles: Mapping[str, EmpiricalCalibrationConfig],
+    candidate_multipliers: Iterable[float],
+    target_lost_sales_rate: float = 0.05,
+    *,
+    policy_mode: str = "base_stock",
+) -> dict[str, EmpiricalCalibrationResult]:
+    """Calibrate forecast multipliers to achieve a target lost sales rate.
+
+    For each article, this function simulates with different multipliers
+    and selects the smallest multiplier that achieves <= target_lost_sales_rate.
+
+    Parameters
+    ----------
+    articles : Mapping[str, EmpiricalCalibrationConfig]
+        Configuration for each article to calibrate.
+    candidate_multipliers : Iterable[float]
+        Multipliers to try (e.g., [1.0, 1.1, 1.2, ..., 2.0]).
+        Should be sorted in ascending order for efficiency.
+    target_lost_sales_rate : float
+        Target maximum lost sales rate (e.g., 0.05 for 5% lost sales).
+    policy_mode : str
+        Either "base_stock" or "rop" for reorder-point policy.
+
+    Returns
+    -------
+    dict[str, EmpiricalCalibrationResult]
+        Calibration results for each article.
+    """
+    multipliers = sorted(set(candidate_multipliers))
+    if not multipliers:
+        raise ValueError("Candidate multipliers must be provided.")
+    if any(m < 0 for m in multipliers):
+        raise ValueError("Multipliers must be non-negative.")
+    if not 0.0 <= target_lost_sales_rate <= 1.0:
+        raise ValueError("Target lost sales rate must be between 0 and 1.")
+
+    results: dict[str, EmpiricalCalibrationResult] = {}
+
+    for article_id, config in articles.items():
+        # Cache iterables to avoid exhaustion when looping over multipliers
+        demand = config.demand if callable(config.demand) else list(config.demand)
+        forecast = config.forecast if callable(config.forecast) else list(config.forecast)
+
+        best_result: EmpiricalCalibrationResult | None = None
+        fallback_result: EmpiricalCalibrationResult | None = None
+
+        for multiplier in multipliers:
+            if policy_mode == "rop":
+                candidate_policy = RopEmpiricalMultiplierPolicy(
+                    forecast=forecast,
+                    lead_time=config.lead_time,
+                    multiplier=multiplier,
+                )
+            elif policy_mode == "base_stock":
+                candidate_policy = EmpiricalMultiplierPolicy(
+                    forecast=forecast,
+                    lead_time=config.lead_time,
+                    multiplier=multiplier,
+                )
+            else:
+                raise ValueError("policy_mode must be 'base_stock' or 'rop'.")
+
+            simulation = simulate_replenishment(
+                periods=config.periods,
+                demand=demand,
+                initial_on_hand=config.initial_on_hand,
+                lead_time=config.lead_time,
+                policy=candidate_policy,
+                holding_cost_per_unit=config.holding_cost_per_unit,
+                stockout_cost_per_unit=config.stockout_cost_per_unit,
+                order_cost_per_order=config.order_cost_per_order,
+                order_cost_per_unit=config.order_cost_per_unit,
+            )
+
+            # Calculate lost sales rate
+            total_demand = simulation.summary.total_demand
+            total_fulfilled = simulation.summary.total_fulfilled
+            if total_demand > 0:
+                lost_sales_rate = (total_demand - total_fulfilled) / total_demand
+            else:
+                lost_sales_rate = 0.0
+
+            simulation = _attach_metadata(
+                simulation,
+                service_level_factor=multiplier,
+                service_level_mode="empirical_multiplier",
+            )
+
+            candidate = EmpiricalCalibrationResult(
+                multiplier=multiplier,
+                lost_sales_rate=lost_sales_rate,
+                policy=candidate_policy,
+                simulation=simulation,
+            )
+
+            # Track the best result that meets target
+            if lost_sales_rate <= target_lost_sales_rate:
+                if best_result is None or multiplier < best_result.multiplier:
+                    best_result = candidate
+                    # We found a valid result; since multipliers are sorted,
+                    # we can stop here to get the smallest valid multiplier
+                    break
+
+            # Track fallback (lowest lost sales rate even if above target)
+            if fallback_result is None or lost_sales_rate < fallback_result.lost_sales_rate:
+                fallback_result = candidate
+
+        # Use best result if found, otherwise use fallback with lowest lost sales
+        if best_result is not None:
+            results[article_id] = best_result
+        elif fallback_result is not None:
+            results[article_id] = fallback_result
+        else:
+            raise RuntimeError("No calibration result computed.")
+
+    return results
+
+
+def evaluate_empirical_multiplier_lost_sales(
+    articles: Mapping[str, EmpiricalCalibrationConfig],
+    candidate_multipliers: Iterable[float],
+    *,
+    policy_mode: str = "base_stock",
+) -> dict[str, dict[float, float]]:
+    """Return lost sales rates for each multiplier per article.
+
+    This is useful for analyzing how different multipliers affect
+    lost sales before selecting a target.
+    """
+    multipliers = list(candidate_multipliers)
+    if not multipliers:
+        raise ValueError("Candidate multipliers must be provided.")
+
+    results: dict[str, dict[float, float]] = {}
+
+    for article_id, config in articles.items():
+        # Cache iterables to avoid exhaustion when looping over multipliers
+        demand = config.demand if callable(config.demand) else list(config.demand)
+        forecast = config.forecast if callable(config.forecast) else list(config.forecast)
+
+        multiplier_rates: dict[float, float] = {}
+
+        for multiplier in multipliers:
+            if policy_mode == "rop":
+                candidate_policy = RopEmpiricalMultiplierPolicy(
+                    forecast=forecast,
+                    lead_time=config.lead_time,
+                    multiplier=multiplier,
+                )
+            elif policy_mode == "base_stock":
+                candidate_policy = EmpiricalMultiplierPolicy(
+                    forecast=forecast,
+                    lead_time=config.lead_time,
+                    multiplier=multiplier,
+                )
+            else:
+                raise ValueError("policy_mode must be 'base_stock' or 'rop'.")
+
+            simulation = simulate_replenishment(
+                periods=config.periods,
+                demand=demand,
+                initial_on_hand=config.initial_on_hand,
+                lead_time=config.lead_time,
+                policy=candidate_policy,
+                holding_cost_per_unit=config.holding_cost_per_unit,
+                stockout_cost_per_unit=config.stockout_cost_per_unit,
+                order_cost_per_order=config.order_cost_per_order,
+                order_cost_per_unit=config.order_cost_per_unit,
+            )
+
+            total_demand = simulation.summary.total_demand
+            total_fulfilled = simulation.summary.total_fulfilled
+            if total_demand > 0:
+                lost_sales_rate = (total_demand - total_fulfilled) / total_demand
+            else:
+                lost_sales_rate = 0.0
+
+            multiplier_rates[multiplier] = lost_sales_rate
+
+        results[article_id] = multiplier_rates
 
     return results

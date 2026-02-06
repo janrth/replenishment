@@ -1121,11 +1121,36 @@ def plot_replenishment_decisions(
         ax_cum.set_ylabel("Cumulative")
         ax_cum.legend()
     if show_loss and ax_share is not None:
-        demand_series = series["forecast"].where(
-            series["forecast"].notna(), series["actuals"]
-        )
-        demand_series = demand_series.fillna(0).astype(float)
-        demand_series = pd.Series(demand_series.values, index=series["ds"])
+        # Use demand from decisions_df to match the period of lost sales
+        if "demand" in decisions_df.columns and decisions_df["demand"].notna().any():
+            demand_values = pd.to_numeric(
+                decisions_df["demand"], errors="coerce"
+            ).fillna(0)
+            if aggregate:
+                demand_plot = (
+                    decisions_df.assign(demand=demand_values)
+                    .groupby("ds", as_index=False)["demand"]
+                    .sum()
+                )
+            else:
+                demand_plot = decisions_df.loc[
+                    decisions_df["unique_id"] == unique_id, ["ds"]
+                ].copy()
+                demand_plot["demand"] = demand_values.loc[
+                    decisions_df["unique_id"] == unique_id
+                ].values
+            demand_plot["ds"] = pd.to_datetime(demand_plot["ds"])
+            demand_plot = demand_plot.sort_values("ds")
+            demand_series = demand_plot.set_index("ds")["demand"].reindex(
+                series["ds"], fill_value=0
+            )
+        else:
+            # Fallback to actuals from rows if demand not available
+            demand_series = series["actuals"].where(
+                series["actuals"].notna(), series["forecast"]
+            )
+            demand_series = demand_series.fillna(0).astype(float)
+            demand_series = pd.Series(demand_series.values, index=series["ds"])
         cumulative_demand = demand_series.cumsum()
         cumulative_loss = loss_series.cumsum()
         loss_share = cumulative_loss.divide(
