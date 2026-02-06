@@ -1122,7 +1122,7 @@ def plot_replenishment_decisions(
         ax_cum.legend()
     if show_loss and ax_share is not None:
         # Use demand from decisions_df to match the period of lost sales
-        if "demand" in decisions_df.columns:
+        if "demand" in decisions_df.columns and decisions_df["demand"].notna().any():
             demand_values = pd.to_numeric(
                 decisions_df["demand"], errors="coerce"
             ).fillna(0)

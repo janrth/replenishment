@@ -174,9 +174,9 @@ class ForecastBasedPolicy:
         )
         if self._service_level_mode_normalized == "fill_rate":
             forecast_qty = (
-                self._forecast_sum_for(period, self.lead_time + self.aggregation_window)
+                self._forecast_sum_for(period + 1, self.lead_time + self.aggregation_window)
                 if self.aggregation_window > 1
-                else self._forecast_value_for(period + self.lead_time)
+                else self._forecast_value_for(period + max(1, self.lead_time))
             )
             return _safety_stock_from_fill_rate(
                 fill_rate=self.service_level_factor,
