@@ -77,8 +77,8 @@ def test_point_forecast_policy_orders_forecast_plus_safety_stock():
     state_period0 = InventoryState(period=0, on_hand=0, on_order=0, backorders=0)
     state_period1 = InventoryState(period=1, on_hand=0, on_order=0, backorders=0)
 
-    assert policy.order_quantity_for(state_period0) == 12
-    assert policy.order_quantity_for(state_period1) == 12
+    assert policy.order_quantity_for(state_period0) == 23
+    assert policy.order_quantity_for(state_period1) == 24
 
 
 def test_point_forecast_policy_uses_last_forecast_value_for_horizon():
@@ -90,7 +90,7 @@ def test_point_forecast_policy_uses_last_forecast_value_for_horizon():
     )
     state_period5 = InventoryState(period=5, on_hand=0, on_order=0, backorders=0)
 
-    assert policy.order_quantity_for(state_period5) == 23
+    assert policy.order_quantity_for(state_period5) == 46
 
 
 def test_optimize_point_forecast_selects_lowest_cost():
@@ -145,14 +145,14 @@ def test_percentile_forecast_policy_orders_forecast():
     policy = PercentileForecastOptimizationPolicy(forecast=[10, 12], lead_time=1)
     state_period0 = InventoryState(period=0, on_hand=0, on_order=0, backorders=0)
 
-    assert policy.order_quantity_for(state_period0) == 12
+    assert policy.order_quantity_for(state_period0) == 24
 
 
 def test_percentile_forecast_policy_uses_last_value_for_horizon():
     policy = PercentileForecastOptimizationPolicy(forecast=[10, 12], lead_time=1)
     state_period1 = InventoryState(period=1, on_hand=0, on_order=0, backorders=0)
 
-    assert policy.order_quantity_for(state_period1) == 12
+    assert policy.order_quantity_for(state_period1) == 24
 
 
 def test_optimize_percentile_forecast_selects_lowest_cost():

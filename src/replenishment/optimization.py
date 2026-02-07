@@ -38,6 +38,9 @@ def _attach_metadata(
     service_level_factor: float | None = None,
     service_level_mode: str | None = None,
     aggregation_window: int | None = None,
+    review_period: int | None = None,
+    forecast_horizon: int | None = None,
+    rmse_window: int | None = None,
     percentile_target: float | str | None = None,
 ) -> SimulationResult:
     base = simulation.metadata
@@ -60,6 +63,27 @@ def _attach_metadata(
             aggregation_window
             if aggregation_window is not None
             else base.aggregation_window
+            if base is not None
+            else None
+        ),
+        review_period=(
+            review_period
+            if review_period is not None
+            else base.review_period
+            if base is not None
+            else None
+        ),
+        forecast_horizon=(
+            forecast_horizon
+            if forecast_horizon is not None
+            else base.forecast_horizon
+            if base is not None
+            else None
+        ),
+        rmse_window=(
+            rmse_window
+            if rmse_window is not None
+            else base.rmse_window
             if base is not None
             else None
         ),
@@ -114,6 +138,8 @@ class ForecastCandidatesConfig:
     initial_on_hand: int
     lead_time: int
     forecast_candidates: Mapping[float | str, Iterable[int] | DemandModel]
+    review_period: int = 1
+    forecast_horizon: int | None = None
     holding_cost_per_unit: float = 0.0
     stockout_cost_per_unit: float = 0.0
     order_cost_per_order: float = 0.0
@@ -139,7 +165,10 @@ class AggregationWindowOptimizationResult:
         ForecastSeriesPolicy
         | ForecastBasedPolicy
         | PointForecastOptimizationPolicy
+        | LeadTimeForecastOptimizationPolicy
+        | RopPointForecastOptimizationPolicy
         | PercentileForecastOptimizationPolicy
+        | RopPercentileForecastOptimizationPolicy
         | None
     )
 
@@ -148,7 +177,11 @@ class AggregationWindowOptimizationResult:
 class AggregationServiceLevelOptimizationResult:
     window: int
     service_level_factor: float
-    policy: PointForecastOptimizationPolicy
+    policy: (
+        PointForecastOptimizationPolicy
+        | LeadTimeForecastOptimizationPolicy
+        | RopPointForecastOptimizationPolicy
+    )
     simulation: SimulationResult
 
 
@@ -156,12 +189,17 @@ class AggregationServiceLevelOptimizationResult:
 class AggregationForecastTargetOptimizationResult:
     window: int
     target: float | str
-    policy: PercentileForecastOptimizationPolicy
+    policy: PercentileForecastOptimizationPolicy | RopPercentileForecastOptimizationPolicy
     simulation: SimulationResult
 
 
 def _resolve_service_level_mode(
-    policy: ForecastBasedPolicy | PointForecastOptimizationPolicy | LeadTimeForecastOptimizationPolicy,
+    policy: (
+        ForecastBasedPolicy
+        | PointForecastOptimizationPolicy
+        | LeadTimeForecastOptimizationPolicy
+        | RopPointForecastOptimizationPolicy
+    ),
     service_level_mode: str | None,
 ) -> str:
     if service_level_mode is not None:
@@ -204,6 +242,21 @@ def _candidate_policy_for(
     | LeadTimeForecastOptimizationPolicy
     | RopPointForecastOptimizationPolicy
 ):
+    review_period = (
+        aggregation_window
+        if aggregation_window is not None
+        else getattr(policy, "review_period", None)
+    )
+    forecast_horizon = (
+        aggregation_window
+        if aggregation_window is not None
+        else getattr(policy, "forecast_horizon", None)
+    )
+    rmse_window = (
+        aggregation_window
+        if aggregation_window is not None
+        else getattr(policy, "rmse_window", None)
+    )
     if isinstance(policy, LeadTimeForecastOptimizationPolicy):
         return LeadTimeForecastOptimizationPolicy(
             forecast=forecast,
@@ -214,6 +267,9 @@ def _candidate_policy_for(
                 if aggregation_window is not None
                 else policy.aggregation_window
             ),
+            review_period=review_period,
+            forecast_horizon=forecast_horizon,
+            rmse_window=rmse_window,
             service_level_factor=factor,
             service_level_mode=mode,
             fixed_rmse=fixed_rmse,
@@ -228,6 +284,9 @@ def _candidate_policy_for(
                 if aggregation_window is not None
                 else policy.aggregation_window
             ),
+            review_period=review_period,
+            forecast_horizon=forecast_horizon,
+            rmse_window=rmse_window,
             service_level_factor=factor,
             service_level_mode=mode,
             fixed_rmse=fixed_rmse,
@@ -241,6 +300,9 @@ def _candidate_policy_for(
             if aggregation_window is not None
             else policy.aggregation_window
         ),
+        review_period=review_period,
+        forecast_horizon=forecast_horizon,
+        rmse_window=rmse_window,
         service_level_factor=factor,
         service_level_mode=mode,
         fixed_rmse=fixed_rmse,
@@ -299,6 +361,10 @@ def optimize_service_level_factors(
                 simulation,
                 service_level_factor=factor,
                 service_level_mode=mode,
+                aggregation_window=getattr(candidate_policy, "aggregation_window", None),
+                review_period=getattr(candidate_policy, "review_period", None),
+                forecast_horizon=getattr(candidate_policy, "forecast_horizon", None),
+                rmse_window=getattr(candidate_policy, "rmse_window", None),
             )
             if best_result is None:
                 best_result = PointForecastOptimizationResult(
@@ -352,11 +418,15 @@ def optimize_forecast_targets(
                 candidate_policy = RopPercentileForecastOptimizationPolicy(
                     forecast=config.forecast_candidates[target],
                     lead_time=config.lead_time,
+                    review_period=config.review_period,
+                    forecast_horizon=config.forecast_horizon,
                 )
             elif policy_mode == "base_stock":
                 candidate_policy = PercentileForecastOptimizationPolicy(
                     forecast=config.forecast_candidates[target],
                     lead_time=config.lead_time,
+                    review_period=config.review_period,
+                    forecast_horizon=config.forecast_horizon,
                 )
             else:
                 raise ValueError("policy_mode must be 'base_stock' or 'rop'.")
@@ -372,7 +442,11 @@ def optimize_forecast_targets(
                 order_cost_per_unit=config.order_cost_per_unit,
             )
             simulation = _attach_metadata(
-                simulation, percentile_target=target
+                simulation,
+                percentile_target=target,
+                aggregation_window=getattr(candidate_policy, "aggregation_window", None),
+                review_period=getattr(candidate_policy, "review_period", None),
+                forecast_horizon=getattr(candidate_policy, "forecast_horizon", None),
             )
             if best_result is None:
                 best_result = PercentileForecastOptimizationResult(
@@ -420,11 +494,15 @@ def evaluate_forecast_target_costs(
                 candidate_policy = RopPercentileForecastOptimizationPolicy(
                     forecast=config.forecast_candidates[target],
                     lead_time=config.lead_time,
+                    review_period=config.review_period,
+                    forecast_horizon=config.forecast_horizon,
                 )
             elif policy_mode == "base_stock":
                 candidate_policy = PercentileForecastOptimizationPolicy(
                     forecast=config.forecast_candidates[target],
                     lead_time=config.lead_time,
+                    review_period=config.review_period,
+                    forecast_horizon=config.forecast_horizon,
                 )
             else:
                 raise ValueError("policy_mode must be 'base_stock' or 'rop'.")
@@ -616,12 +694,16 @@ def evaluate_aggregation_and_forecast_target_costs(
                         forecast=aggregated_forecast,
                         lead_time=aggregated_lead_time,
                         aggregation_window=1,
+                        review_period=1,
+                        forecast_horizon=1,
                     )
                 elif policy_mode == "base_stock":
                     candidate_policy = PercentileForecastOptimizationPolicy(
                         forecast=aggregated_forecast,
                         lead_time=aggregated_lead_time,
                         aggregation_window=1,
+                        review_period=1,
+                        forecast_horizon=1,
                     )
                 else:
                     raise ValueError("policy_mode must be 'base_stock' or 'rop'.")
@@ -670,8 +752,15 @@ def optimize_aggregation_windows(
         best_result: AggregationWindowOptimizationResult | None = None
         for window in windows:
             if hasattr(config.policy, "aggregation_window"):
+                replace_kwargs: dict[str, object] = {"aggregation_window": window}
+                if hasattr(config.policy, "review_period"):
+                    replace_kwargs["review_period"] = window
+                if hasattr(config.policy, "forecast_horizon"):
+                    replace_kwargs["forecast_horizon"] = window
+                if hasattr(config.policy, "rmse_window"):
+                    replace_kwargs["rmse_window"] = window
                 aggregated_policy = dataclass_replace(
-                    config.policy, aggregation_window=window
+                    config.policy, **replace_kwargs
                 )
             else:
                 aggregated_policy = config.policy
@@ -687,7 +776,11 @@ def optimize_aggregation_windows(
                 order_cost_per_unit=config.order_cost_per_unit,
             )
             simulation = _attach_metadata(
-                simulation, aggregation_window=window
+                simulation,
+                aggregation_window=window,
+                review_period=getattr(aggregated_policy, "review_period", None),
+                forecast_horizon=getattr(aggregated_policy, "forecast_horizon", None),
+                rmse_window=getattr(aggregated_policy, "rmse_window", None),
             )
             candidate = AggregationWindowOptimizationResult(
                 window=window,
@@ -735,7 +828,12 @@ def optimize_aggregation_and_service_level_factors(
         policy = config.policy
         if not isinstance(
             policy,
-            (ForecastBasedPolicy, PointForecastOptimizationPolicy, LeadTimeForecastOptimizationPolicy),
+            (
+                ForecastBasedPolicy,
+                PointForecastOptimizationPolicy,
+                LeadTimeForecastOptimizationPolicy,
+                RopPointForecastOptimizationPolicy,
+            ),
         ):
             raise TypeError(
                 "Aggregation with service-level optimization requires point-forecast policies."
@@ -772,6 +870,9 @@ def optimize_aggregation_and_service_level_factors(
                     service_level_factor=factor,
                     service_level_mode=mode,
                     aggregation_window=window,
+                    review_period=getattr(candidate_policy, "review_period", None),
+                    forecast_horizon=getattr(candidate_policy, "forecast_horizon", None),
+                    rmse_window=getattr(candidate_policy, "rmse_window", None),
                 )
                 candidate = AggregationServiceLevelOptimizationResult(
                     window=window,
@@ -850,12 +951,16 @@ def optimize_aggregation_and_forecast_targets(
                         forecast=aggregated_forecast,
                         lead_time=aggregated_lead_time,
                         aggregation_window=1,
+                        review_period=1,
+                        forecast_horizon=1,
                     )
                 elif policy_mode == "base_stock":
                     candidate_policy = PercentileForecastOptimizationPolicy(
                         forecast=aggregated_forecast,
                         lead_time=aggregated_lead_time,
                         aggregation_window=1,
+                        review_period=1,
+                        forecast_horizon=1,
                     )
                 else:
                     raise ValueError("policy_mode must be 'base_stock' or 'rop'.")
@@ -874,6 +979,8 @@ def optimize_aggregation_and_forecast_targets(
                     simulation,
                     aggregation_window=window,
                     percentile_target=target,
+                    review_period=getattr(candidate_policy, "review_period", None),
+                    forecast_horizon=getattr(candidate_policy, "forecast_horizon", None),
                 )
                 candidate = AggregationForecastTargetOptimizationResult(
                     window=window,
@@ -1013,6 +1120,9 @@ def calibrate_empirical_multipliers(
                 simulation,
                 service_level_factor=multiplier,
                 service_level_mode="empirical_multiplier",
+                aggregation_window=getattr(candidate_policy, "aggregation_window", None),
+                review_period=getattr(candidate_policy, "review_period", None),
+                forecast_horizon=getattr(candidate_policy, "forecast_horizon", None),
             )
 
             candidate = EmpiricalCalibrationResult(

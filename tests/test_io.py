@@ -24,6 +24,7 @@ from replenishment import (
     simulate_replenishment_for_articles,
     simulate_replenishment_with_aggregation,
 )
+from replenishment.aggregation import aggregate_series
 from replenishment.io import ReplenishmentDecisionMetadata
 
 
@@ -482,7 +483,10 @@ def test_build_replenishment_decisions_from_simulations():
     snapshots = simulation.snapshots
     forecast_values = [row.forecast for row in rows]
     actuals_values = [row.actuals for row in rows]
-    horizon = rows[0].lead_time + 2
+    review_period = 2
+    forecast_horizon = 2
+    rmse_window = 2
+    horizon = rows[0].lead_time + forecast_horizon
     lead_time_factor = math.sqrt(horizon)
     safety_stock_values = []
     for index in range(len(snapshots)):
@@ -490,11 +494,28 @@ def test_build_replenishment_decisions_from_simulations():
         if max_index <= 0:
             rmse = 0.0
         else:
+            forecast_slice = forecast_values[:max_index]
+            actuals_slice = actuals_values[:max_index]
+            if rmse_window > 1:
+                forecast_slice = aggregate_series(
+                    forecast_slice,
+                    periods=len(forecast_slice),
+                    window=rmse_window,
+                    extend_last=True,
+                )
+                actuals_slice = aggregate_series(
+                    actuals_slice,
+                    periods=len(actuals_slice),
+                    window=rmse_window,
+                    extend_last=False,
+                )
             errors = [
-                actuals_values[i] - forecast_values[i]
-                for i in range(max_index)
+                actuals_slice[i] - forecast_slice[i]
+                for i in range(min(len(actuals_slice), len(forecast_slice)))
             ]
-            if len(errors) == 1:
+            if not errors:
+                rmse = 0.0
+            elif len(errors) == 1:
                 rmse = abs(errors[0])
             else:
                 rmse = math.sqrt(
@@ -511,7 +532,7 @@ def test_build_replenishment_decisions_from_simulations():
         forecast_quantity = sum(forecast_values[start:end]) / 2
         lead_end = min(start + horizon, len(forecast_values))
         forecast_quantity_lead_time = (
-            sum(forecast_values[start:lead_end]) / 2
+            sum(forecast_values[start:lead_end]) / review_period
         )
         stock_after = stock_before - float(snapshot.demand)
         if stock_after < 0:
@@ -552,7 +573,10 @@ def test_build_replenishment_decisions_from_simulations():
                 missed_sales=missed_sales,
                 sigma=0.9,
                 service_level_mode="factor",
-                aggregation_window=2,
+                aggregation_window=review_period,
+                review_period=review_period,
+                forecast_horizon=forecast_horizon,
+                rmse_window=rmse_window,
             )
         )
 
@@ -628,17 +652,26 @@ def test_build_replenishment_decisions_from_optimization_results():
         start = index
         end = min(start + window, len(forecast_values))
         forecast_quantity = sum(forecast_values[start:end]) / window
+        total_horizon = rows[0].lead_time + window
         if window > 1:
-            horizon = rows[0].lead_time + window
-            lead_end = min(start + horizon, len(forecast_values))
+            lead_end = min(start + total_horizon, len(forecast_values))
             forecast_quantity_lead_time = (
                 sum(forecast_values[start:lead_end]) / window
             )
         else:
-            lead_index = min(
-                start + rows[0].lead_time, len(forecast_values) - 1
-            )
-            forecast_quantity_lead_time = forecast_values[lead_index]
+            start_period = start + 1
+            end_period = start_period + max(1, total_horizon)
+            if end_period <= len(forecast_values):
+                forecast_quantity_lead_time = sum(
+                    forecast_values[start_period:end_period]
+                )
+            else:
+                forecast_quantity_lead_time = sum(
+                    forecast_values[start_period:len(forecast_values)]
+                )
+                extra = end_period - len(forecast_values)
+                if extra > 0 and forecast_values:
+                    forecast_quantity_lead_time += forecast_values[-1] * extra
         stock_before = float(running_stock) + float(snapshot.received)
         starting_stock = int(round(stock_before))
         stock_after = stock_before - float(snapshot.demand)
@@ -672,10 +705,13 @@ def test_build_replenishment_decisions_from_optimization_results():
                 current_stock=current_stock,
                 on_order=snapshot.on_order,
                 backorders=snapshot.backorders,
-                missed_sales=missed_sales,
-                aggregation_window=window,
+                    missed_sales=missed_sales,
+                    aggregation_window=window,
+                    review_period=window,
+                    forecast_horizon=window,
+                    rmse_window=window,
+                )
             )
-        )
 
     assert decisions == expected
 
@@ -726,9 +762,10 @@ def test_build_replenishment_decisions_from_simulations_with_metadata_inputs():
     )
 
     running_stock = rows[0].current_stock
+    lead_time_factor = math.sqrt(rows[0].lead_time + 1)
     safety_stock_values = [
         0.0,
-        1.25 * abs(rows[0].actuals - rows[0].forecast),
+        1.25 * abs(rows[0].actuals - rows[0].forecast) * lead_time_factor,
     ]
     expected = []
     for index, snapshot in enumerate(simulations["A"].snapshots):
@@ -763,6 +800,9 @@ def test_build_replenishment_decisions_from_simulations_with_metadata_inputs():
                 missed_sales=missed_sales,
                 sigma=1.25,
                 aggregation_window=1,
+                review_period=1,
+                forecast_horizon=1,
+                rmse_window=1,
                 percentile_target="p90",
             )
         )
@@ -819,20 +859,30 @@ def test_build_replenishment_decisions_from_simulations_merges_metadata():
 
     running_stock = rows[0].current_stock
     forecast_values = [row.forecast for row in rows]
+    lead_time_factor = math.sqrt(rows[0].lead_time + 1)
     safety_stock_values = [
         0.0,
-        1.5 * abs(rows[0].actuals - rows[0].forecast),
+        1.5 * abs(rows[0].actuals - rows[0].forecast) * lead_time_factor,
     ]
     expected = []
     for index, snapshot in enumerate(simulations["A"].snapshots):
         stock_before = float(running_stock) + float(snapshot.received)
         starting_stock = int(round(stock_before))
         forecast_quantity = forecast_values[index]
-        if rows[0].lead_time > 0:
-            lead_index = min(index + rows[0].lead_time, len(forecast_values) - 1)
-            forecast_quantity_lead_time = forecast_values[lead_index]
+        total_horizon = rows[0].lead_time + 1
+        start_period = index + 1
+        end_period = start_period + max(1, total_horizon)
+        if end_period <= len(forecast_values):
+            forecast_quantity_lead_time = sum(
+                forecast_values[start_period:end_period]
+            )
         else:
-            forecast_quantity_lead_time = forecast_quantity
+            forecast_quantity_lead_time = sum(
+                forecast_values[start_period:len(forecast_values)]
+            )
+            extra = end_period - len(forecast_values)
+            if extra > 0 and forecast_values:
+                forecast_quantity_lead_time += forecast_values[-1] * extra
         stock_after = stock_before - float(snapshot.demand)
         if stock_after < 0:
             missed_sales = int(round(-stock_after))
@@ -868,6 +918,9 @@ def test_build_replenishment_decisions_from_simulations_merges_metadata():
                 missed_sales=missed_sales,
                 sigma=1.5,
                 aggregation_window=1,
+                review_period=1,
+                forecast_horizon=1,
+                rmse_window=1,
                 percentile_target="p95",
             )
         )
