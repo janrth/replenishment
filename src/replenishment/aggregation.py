@@ -167,9 +167,14 @@ def simulate_replenishment_with_aggregation(
     from .simulation import simulate_replenishment
 
     if hasattr(policy, "aggregation_window"):
-        aggregated_policy = dataclass_replace(
-            policy, aggregation_window=aggregation_window
-        )
+        replace_kwargs: dict[str, object] = {"aggregation_window": aggregation_window}
+        if hasattr(policy, "review_period"):
+            replace_kwargs["review_period"] = aggregation_window
+        if hasattr(policy, "forecast_horizon"):
+            replace_kwargs["forecast_horizon"] = aggregation_window
+        if hasattr(policy, "rmse_window"):
+            replace_kwargs["rmse_window"] = aggregation_window
+        aggregated_policy = dataclass_replace(policy, **replace_kwargs)
     else:
         aggregated_policy = policy
 
@@ -201,5 +206,8 @@ def simulate_replenishment_with_aggregation(
             service_level_factor=service_level_factor,
             service_level_mode=service_level_mode,
             aggregation_window=aggregation_window,
+            review_period=getattr(aggregated_policy, "review_period", None),
+            forecast_horizon=getattr(aggregated_policy, "forecast_horizon", None),
+            rmse_window=getattr(aggregated_policy, "rmse_window", None),
         ),
     )

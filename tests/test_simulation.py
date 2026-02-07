@@ -77,8 +77,8 @@ def test_point_forecast_policy_orders_forecast_plus_safety_stock():
     state_period0 = InventoryState(period=0, on_hand=0, on_order=0, backorders=0)
     state_period1 = InventoryState(period=1, on_hand=0, on_order=0, backorders=0)
 
-    assert policy.order_quantity_for(state_period0) == 12
-    assert policy.order_quantity_for(state_period1) == 12
+    assert policy.order_quantity_for(state_period0) == 23
+    assert policy.order_quantity_for(state_period1) == 24
 
 
 def test_point_forecast_policy_uses_last_forecast_value_for_horizon():
@@ -90,7 +90,7 @@ def test_point_forecast_policy_uses_last_forecast_value_for_horizon():
     )
     state_period5 = InventoryState(period=5, on_hand=0, on_order=0, backorders=0)
 
-    assert policy.order_quantity_for(state_period5) == 23
+    assert policy.order_quantity_for(state_period5) == 46
 
 
 def test_optimize_point_forecast_selects_lowest_cost():
@@ -141,18 +141,73 @@ def test_optimize_point_forecast_selects_lowest_cost():
     assert legacy_results["A"].service_level_factor == expected_factor
 
 
+def test_optimize_service_level_factors_preserves_custom_forecast_horizon():
+    forecast = [4, 6, 5, 7, 8]
+    actuals = [5, 5, 6, 6, 7]
+    factor = 0.0
+    base_policy = PointForecastOptimizationPolicy(
+        forecast=forecast,
+        actuals=actuals,
+        lead_time=1,
+        aggregation_window=1,
+        review_period=1,
+        forecast_horizon=3,
+        rmse_window=1,
+        service_level_factor=factor,
+    )
+    config = ArticleSimulationConfig(
+        periods=3,
+        demand=[5, 6, 7],
+        initial_on_hand=0,
+        lead_time=1,
+        policy=base_policy,
+        holding_cost_per_unit=1.0,
+        stockout_cost_per_unit=1.0,
+    )
+
+    result = optimize_service_level_factors({"A": config}, [factor])["A"]
+
+    expected_policy = PointForecastOptimizationPolicy(
+        forecast=forecast,
+        actuals=actuals,
+        lead_time=1,
+        aggregation_window=1,
+        review_period=1,
+        forecast_horizon=3,
+        rmse_window=1,
+        service_level_factor=factor,
+    )
+    expected_simulation = simulate_replenishment(
+        periods=config.periods,
+        demand=config.demand,
+        initial_on_hand=config.initial_on_hand,
+        lead_time=config.lead_time,
+        policy=expected_policy,
+        holding_cost_per_unit=config.holding_cost_per_unit,
+        stockout_cost_per_unit=config.stockout_cost_per_unit,
+    )
+
+    assert result.service_level_factor == factor
+    assert result.simulation.metadata is not None
+    assert result.simulation.metadata.forecast_horizon == 3
+    assert (
+        result.simulation.summary.total_cost
+        == expected_simulation.summary.total_cost
+    )
+
+
 def test_percentile_forecast_policy_orders_forecast():
     policy = PercentileForecastOptimizationPolicy(forecast=[10, 12], lead_time=1)
     state_period0 = InventoryState(period=0, on_hand=0, on_order=0, backorders=0)
 
-    assert policy.order_quantity_for(state_period0) == 12
+    assert policy.order_quantity_for(state_period0) == 24
 
 
 def test_percentile_forecast_policy_uses_last_value_for_horizon():
     policy = PercentileForecastOptimizationPolicy(forecast=[10, 12], lead_time=1)
     state_period1 = InventoryState(period=1, on_hand=0, on_order=0, backorders=0)
 
-    assert policy.order_quantity_for(state_period1) == 12
+    assert policy.order_quantity_for(state_period1) == 24
 
 
 def test_optimize_percentile_forecast_selects_lowest_cost():
@@ -254,6 +309,55 @@ def test_evaluate_service_level_factor_costs_matches_simulation():
         expected[factor] = simulation.summary.total_cost
 
     assert costs["A"] == expected
+
+
+def test_evaluate_service_level_factor_costs_preserves_custom_forecast_horizon():
+    forecast = [4, 6, 5, 7, 8]
+    actuals = [5, 5, 6, 6, 7]
+    factor = 0.0
+    base_policy = PointForecastOptimizationPolicy(
+        forecast=forecast,
+        actuals=actuals,
+        lead_time=1,
+        aggregation_window=1,
+        review_period=1,
+        forecast_horizon=3,
+        rmse_window=1,
+        service_level_factor=factor,
+    )
+    config = ArticleSimulationConfig(
+        periods=3,
+        demand=[5, 6, 7],
+        initial_on_hand=0,
+        lead_time=1,
+        policy=base_policy,
+        holding_cost_per_unit=1.0,
+        stockout_cost_per_unit=1.0,
+    )
+
+    costs = evaluate_service_level_factor_costs({"A": config}, [factor])
+
+    expected_policy = PointForecastOptimizationPolicy(
+        forecast=forecast,
+        actuals=actuals,
+        lead_time=1,
+        aggregation_window=1,
+        review_period=1,
+        forecast_horizon=3,
+        rmse_window=1,
+        service_level_factor=factor,
+    )
+    expected_simulation = simulate_replenishment(
+        periods=config.periods,
+        demand=config.demand,
+        initial_on_hand=config.initial_on_hand,
+        lead_time=config.lead_time,
+        policy=expected_policy,
+        holding_cost_per_unit=config.holding_cost_per_unit,
+        stockout_cost_per_unit=config.stockout_cost_per_unit,
+    )
+
+    assert costs["A"][factor] == expected_simulation.summary.total_cost
 
 
 def test_evaluate_aggregation_and_forecast_target_costs_matches_simulation():
