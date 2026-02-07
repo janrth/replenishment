@@ -344,7 +344,6 @@ def optimize_service_level_factors(
                 factor=factor,
                 mode=mode,
                 fixed_rmse=getattr(policy, "fixed_rmse", None),
-                aggregation_window=getattr(policy, "aggregation_window", None),
             )
             simulation = simulate_replenishment(
                 periods=config.periods,
@@ -557,7 +556,6 @@ def evaluate_service_level_factor_costs(
                 factor=factor,
                 mode=mode,
                 fixed_rmse=getattr(policy, "fixed_rmse", None),
-                aggregation_window=getattr(policy, "aggregation_window", None),
             )
             simulation = simulate_replenishment(
                 periods=config.periods,
