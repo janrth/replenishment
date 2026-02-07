@@ -643,7 +643,7 @@ def evaluate_aggregation_and_forecast_target_costs(
     *,
     policy_mode: str = "base_stock",
 ) -> dict[str, dict[int, dict[float | str, float]]]:
-    """Return total costs for each window and forecast target per article."""
+    """Return total costs for each review window and forecast target per article."""
     windows = list(candidate_windows)
     if not windows:
         raise ValueError("Aggregation windows must be provided.")
@@ -669,47 +669,33 @@ def evaluate_aggregation_and_forecast_target_costs(
 
         window_costs: dict[int, dict[float | str, float]] = {}
         for window in windows:
-            aggregated_demand = aggregate_series(
-                config.demand,
-                periods=config.periods,
-                window=window,
-                extend_last=False,
-            )
-            aggregated_periods = aggregate_periods(config.periods, window)
-            aggregated_lead_time = aggregate_lead_time(config.lead_time, window)
             target_costs: dict[float | str, float] = {}
             for target in targets:
                 if target not in candidate_series:
                     raise ValueError(f"Unknown forecast target: {target}")
-                aggregated_forecast = aggregate_series(
-                    candidate_series[target],
-                    periods=config.periods,
-                    window=window,
-                    extend_last=True,
-                )
                 if policy_mode == "rop":
                     candidate_policy = RopPercentileForecastOptimizationPolicy(
-                        forecast=aggregated_forecast,
-                        lead_time=aggregated_lead_time,
-                        aggregation_window=1,
-                        review_period=1,
-                        forecast_horizon=1,
+                        forecast=candidate_series[target],
+                        lead_time=config.lead_time,
+                        aggregation_window=window,
+                        review_period=window,
+                        forecast_horizon=window,
                     )
                 elif policy_mode == "base_stock":
                     candidate_policy = PercentileForecastOptimizationPolicy(
-                        forecast=aggregated_forecast,
-                        lead_time=aggregated_lead_time,
-                        aggregation_window=1,
-                        review_period=1,
-                        forecast_horizon=1,
+                        forecast=candidate_series[target],
+                        lead_time=config.lead_time,
+                        aggregation_window=window,
+                        review_period=window,
+                        forecast_horizon=window,
                     )
                 else:
                     raise ValueError("policy_mode must be 'base_stock' or 'rop'.")
                 simulation = simulate_replenishment(
-                    periods=aggregated_periods,
-                    demand=aggregated_demand,
+                    periods=config.periods,
+                    demand=config.demand,
                     initial_on_hand=config.initial_on_hand,
-                    lead_time=aggregated_lead_time,
+                    lead_time=config.lead_time,
                     policy=candidate_policy,
                     holding_cost_per_unit=config.holding_cost_per_unit,
                     stockout_cost_per_unit=config.stockout_cost_per_unit,
@@ -901,7 +887,7 @@ def optimize_aggregation_and_forecast_targets(
     *,
     policy_mode: str = "base_stock",
 ) -> dict[str, AggregationForecastTargetOptimizationResult]:
-    """Pick the aggregation window and forecast target that minimize total cost."""
+    """Pick the review window and forecast target that minimize total cost."""
     windows = list(candidate_windows)
     if not windows:
         raise ValueError("Aggregation windows must be provided.")
@@ -927,46 +913,32 @@ def optimize_aggregation_and_forecast_targets(
 
         best_result: AggregationForecastTargetOptimizationResult | None = None
         for window in windows:
-            aggregated_demand = aggregate_series(
-                config.demand,
-                periods=config.periods,
-                window=window,
-                extend_last=False,
-            )
-            aggregated_periods = aggregate_periods(config.periods, window)
-            aggregated_lead_time = aggregate_lead_time(config.lead_time, window)
             for target in targets:
                 if target not in candidate_series:
                     raise ValueError(f"Unknown forecast target: {target}")
-                aggregated_forecast = aggregate_series(
-                    candidate_series[target],
-                    periods=config.periods,
-                    window=window,
-                    extend_last=True,
-                )
                 if policy_mode == "rop":
                     candidate_policy = RopPercentileForecastOptimizationPolicy(
-                        forecast=aggregated_forecast,
-                        lead_time=aggregated_lead_time,
-                        aggregation_window=1,
-                        review_period=1,
-                        forecast_horizon=1,
+                        forecast=candidate_series[target],
+                        lead_time=config.lead_time,
+                        aggregation_window=window,
+                        review_period=window,
+                        forecast_horizon=window,
                     )
                 elif policy_mode == "base_stock":
                     candidate_policy = PercentileForecastOptimizationPolicy(
-                        forecast=aggregated_forecast,
-                        lead_time=aggregated_lead_time,
-                        aggregation_window=1,
-                        review_period=1,
-                        forecast_horizon=1,
+                        forecast=candidate_series[target],
+                        lead_time=config.lead_time,
+                        aggregation_window=window,
+                        review_period=window,
+                        forecast_horizon=window,
                     )
                 else:
                     raise ValueError("policy_mode must be 'base_stock' or 'rop'.")
                 simulation = simulate_replenishment(
-                    periods=aggregated_periods,
-                    demand=aggregated_demand,
+                    periods=config.periods,
+                    demand=config.demand,
                     initial_on_hand=config.initial_on_hand,
-                    lead_time=aggregated_lead_time,
+                    lead_time=config.lead_time,
                     policy=candidate_policy,
                     holding_cost_per_unit=config.holding_cost_per_unit,
                     stockout_cost_per_unit=config.stockout_cost_per_unit,
