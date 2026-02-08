@@ -1,5 +1,15 @@
 """Replenishment simulation library."""
 
+from importlib.metadata import PackageNotFoundError, version as _dist_version
+
+try:
+    from ._version import version as __version__
+except ModuleNotFoundError:
+    try:
+        __version__ = _dist_version("replenishment")
+    except PackageNotFoundError:
+        __version__ = "0.0.0"
+
 from .policies import (
     EmpiricalMultiplierPolicy,
     ForecastBasedPolicy,
@@ -83,6 +93,7 @@ except ModuleNotFoundError:
     _HAS_PLOTTING = False
 
 __all__ = [
+    "__version__",
     "DemandModel",
     "InventoryState",
     "ArticleSimulationConfig",

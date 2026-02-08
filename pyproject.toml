@@ -1,9 +1,19 @@
 [project]
 name = "replenishment"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Stock replenishment simulation library."
 readme = "README.md"
 requires-python = ">=3.9"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
 dependencies = [
     "ipykernel>=6.31.0",
     "matplotlib>=3.8",
@@ -16,9 +26,20 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
 
+[project.urls]
+Homepage = "https://github.com/janrth/replenishment"
+Repository = "https://github.com/janrth/replenishment"
+Issues = "https://github.com/janrth/replenishment/issues"
+
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=69", "setuptools-scm[toml]>=8"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools_scm]
+tag_regex = "^(?:v)?(?P<version>\\d+\\.\\d+\\.\\d+.*)$"
+version_scheme = "guess-next-dev"
+local_scheme = "no-local-version"
+write_to = "src/replenishment/_version.py"
