@@ -19,6 +19,45 @@ Run checks with:
 uv run pytest
 ```
 
+## Release and PyPI publishing
+
+This repository is configured so that publishing on PyPI is done from GitHub
+Actions (`.github/workflows/release.yml`), not from local `twine upload`.
+
+### One-time setup
+
+1. Create a PyPI project named `replenishment` (or let the first publish create it).
+2. In PyPI, configure a trusted publisher for this repository and workflow:
+   - Owner: `janrth`
+   - Repository: `replenishment`
+   - Workflow: `release.yml`
+   - Environment: `pypi`
+3. In GitHub, create an environment named `pypi` in repo settings.
+
+### Versioning
+
+Package versions are derived from git tags via `setuptools-scm`. Use semantic
+tags such as `v0.1.0`, `v0.2.0`, etc.
+
+### Release flow (GitHub-first)
+
+1. Push a version tag:
+
+   ```bash
+   git tag v0.1.0
+   git push origin v0.1.0
+   ```
+
+2. In GitHub, create/publish a release for that tag.
+3. The `Release` workflow will:
+   - build `sdist` and wheel artifacts,
+   - attach them to the GitHub release,
+   - publish them to PyPI automatically.
+
+You can also run the workflow manually from the Actions tab using `workflow_dispatch`
+and pass `git_ref` (for example `v0.1.0`).
+
+## Usage
 ## Plot-first usage
 
 This README focuses on two visual workflows:

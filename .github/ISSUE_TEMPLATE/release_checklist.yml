@@ -1,0 +1,52 @@
+name: Release checklist
+description: Track tasks for publishing a new version to GitHub Releases and PyPI.
+title: "Release vX.Y.Z"
+labels:
+  - release
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this checklist for each production release.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Semantic version without `v` prefix (example `0.2.0`).
+      placeholder: 0.2.0
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-flight
+      options:
+        - label: CI is green on main.
+        - label: Release notes are prepared.
+        - label: PyPI trusted publisher is configured for this repo.
+
+  - type: checkboxes
+    id: tag_release
+    attributes:
+      label: Tag and GitHub release
+      options:
+        - label: I created and pushed the tag `vX.Y.Z` from main.
+        - label: I published a GitHub Release for `vX.Y.Z`.
+        - label: Release workflow completed successfully.
+
+  - type: checkboxes
+    id: post_release
+    attributes:
+      label: Post-release verification
+      options:
+        - label: Dist artifacts are attached to the GitHub Release.
+        - label: Package `replenishment==X.Y.Z` is visible on PyPI.
+        - label: I installed from PyPI in a clean environment and smoke-tested import.
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Optional links or follow-ups.
