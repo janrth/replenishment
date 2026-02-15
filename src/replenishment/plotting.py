@@ -737,7 +737,6 @@ def plot_replenishment_decisions(
             loss_plot["missed_sales"] = missed_sales.loc[
                 decisions_df["unique_id"] == unique_id
             ]
-            print(loss_plot["missed_sales"])
         loss_plot["ds"] = pd.to_datetime(loss_plot["ds"])
         loss_plot = loss_plot.sort_values("ds")
         loss_series = loss_plot.set_index("ds")["missed_sales"].reindex(
