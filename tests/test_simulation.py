@@ -1,5 +1,7 @@
 from replenishment import (
     ArticleSimulationConfig,
+    EmpiricalMultiplierPolicy,
+    ForecastBasedPolicy,
     ForecastCandidatesConfig,
     InventoryState,
     PercentileForecastOptimizationPolicy,
@@ -91,6 +93,44 @@ def test_point_forecast_policy_uses_last_forecast_value_for_horizon():
     state_period5 = InventoryState(period=5, on_hand=0, on_order=0, backorders=0)
 
     assert policy.order_quantity_for(state_period5) == 23
+
+
+def test_point_forecast_fill_rate_uses_protection_window_demand():
+    point_policy = PointForecastOptimizationPolicy(
+        forecast=[10, 20, 30, 40, 50],
+        actuals=[10, 20, 30, 40, 50],
+        lead_time=2,
+        forecast_horizon=1,
+        service_level_factor=0.95,
+        service_level_mode="fill_rate",
+        fixed_rmse=2.0,
+    )
+    reference_policy = ForecastBasedPolicy(
+        forecast=[10, 20, 30, 40, 50],
+        actuals=[10, 20, 30, 40, 50],
+        lead_time=2,
+        forecast_horizon=1,
+        service_level_factor=0.95,
+        service_level_mode="fill_rate",
+        fixed_rmse=2.0,
+    )
+    state_period1 = InventoryState(period=1, on_hand=0, on_order=0, backorders=0)
+
+    assert point_policy.order_quantity_for(state_period1) == reference_policy.order_quantity_for(
+        state_period1
+    )
+
+
+def test_empirical_multiplier_policy_uses_lead_time_offset_for_forecast_horizon():
+    policy = EmpiricalMultiplierPolicy(
+        forecast=[10, 20, 30, 40, 50],
+        lead_time=2,
+        forecast_horizon=2,
+        multiplier=1.0,
+    )
+    state_period0 = InventoryState(period=0, on_hand=0, on_order=0, backorders=0)
+
+    assert policy.order_quantity_for(state_period0) == 70
 
 
 def test_optimize_point_forecast_selects_lowest_cost():
