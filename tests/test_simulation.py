@@ -1,5 +1,6 @@
 from replenishment import (
     ArticleSimulationConfig,
+    EmpiricalMultiplierPolicy,
     ForecastCandidatesConfig,
     InventoryState,
     PercentileForecastOptimizationPolicy,
@@ -91,6 +92,18 @@ def test_point_forecast_policy_uses_last_forecast_value_for_horizon():
     state_period5 = InventoryState(period=5, on_hand=0, on_order=0, backorders=0)
 
     assert policy.order_quantity_for(state_period5) == 23
+
+
+def test_empirical_multiplier_policy_uses_lead_time_offset_for_forecast_horizon():
+    policy = EmpiricalMultiplierPolicy(
+        forecast=[10, 20, 30, 40, 50],
+        lead_time=2,
+        forecast_horizon=2,
+        multiplier=1.0,
+    )
+    state_period0 = InventoryState(period=0, on_hand=0, on_order=0, backorders=0)
+
+    assert policy.order_quantity_for(state_period0) == 70
 
 
 def test_optimize_point_forecast_selects_lowest_cost():

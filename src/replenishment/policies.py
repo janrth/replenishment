@@ -1067,7 +1067,8 @@ class EmpiricalMultiplierPolicy:
         total_horizon = (
             self.forecast_horizon if self.forecast_horizon is not None else 1
         )
-        forecast_qty = self._forecast_sum_for(state.period + 1, total_horizon)
+        start_period = state.period + max(1, self.lead_time)
+        forecast_qty = self._forecast_sum_for(start_period, total_horizon)
         target = forecast_qty * self.multiplier
         return max(0, int(math.ceil(target - state.inventory_position)))
 
