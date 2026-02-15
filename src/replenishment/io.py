@@ -542,7 +542,8 @@ def build_replenishment_decisions_from_simulations(
             start = index * snapshot_window
             forecast_quantity = None
             forecast_quantity_lead_time = None
-            total_horizon = lead_time + forecast_horizon_value
+            total_horizon = forecast_horizon_value
+            lead_offset = max(1, lead_time)
             if forecast_values is not None:
                 if start >= forecast_length or forecast_length == 0:
                     forecast_quantity = None
@@ -554,10 +555,27 @@ def build_replenishment_decisions_from_simulations(
                             forecast_values[start:cycle_end]
                         )
                         horizon = total_horizon if total_horizon > 0 else 1
-                        lead_end = min(start + horizon, forecast_length)
-                        forecast_quantity_lead_time = sum(
-                            forecast_values[start:lead_end]
-                        )
+                        lead_start = start + lead_offset
+                        lead_end = lead_start + horizon
+                        if lead_start >= forecast_length:
+                            forecast_quantity_lead_time = (
+                                forecast_values[-1] * horizon
+                                if forecast_values
+                                else None
+                            )
+                        elif lead_end <= forecast_length:
+                            forecast_quantity_lead_time = sum(
+                                forecast_values[lead_start:lead_end]
+                            )
+                        else:
+                            forecast_quantity_lead_time = sum(
+                                forecast_values[lead_start:forecast_length]
+                            )
+                            extra = lead_end - forecast_length
+                            if extra > 0 and forecast_values:
+                                forecast_quantity_lead_time += (
+                                    forecast_values[-1] * extra
+                                )
                         if window > 0:
                             forecast_quantity_lead_time = (
                                 forecast_quantity_lead_time / window
@@ -565,7 +583,7 @@ def build_replenishment_decisions_from_simulations(
                             forecast_quantity = forecast_quantity / window
                     elif daily_snapshots:
                         forecast_quantity = forecast_values[start]
-                        start_period = start + 1
+                        start_period = start + lead_offset
                         horizon = max(1, total_horizon)
                         if start_period >= forecast_length:
                             forecast_quantity_lead_time = (
@@ -1948,8 +1966,9 @@ def _safety_stock_by_period(
                 rmse = _rmse_from_series(actuals_slice, forecast_slice)
         if normalized_mode == "fill_rate":
             horizon = max(1, protection_horizon)
+            start_index = period + max(1, lead_time)
             forecast_qty = _sum_with_extension(
-                forecast_values, period, horizon
+                forecast_values, start_index, horizon
             )
             std_dev = rmse * lead_time_factor
             if std_dev <= 0 or forecast_qty <= 0:

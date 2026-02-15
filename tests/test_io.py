@@ -524,15 +524,34 @@ def test_build_replenishment_decisions_from_simulations():
         safety_stock_values.append(0.9 * rmse * lead_time_factor)
     expected = []
     running_stock = rows[0].current_stock
+    lead_offset = max(1, rows[0].lead_time)
     for index, snapshot in enumerate(snapshots):
         start = index
         end = min(start + 2, len(forecast_values))
         stock_before = float(running_stock) + float(snapshot.received)
         starting_stock = int(round(stock_before))
         forecast_quantity = sum(forecast_values[start:end]) / 2
-        lead_end = min(start + horizon, len(forecast_values))
+        lead_start = start + lead_offset
+        lead_end = lead_start + forecast_horizon
+        if lead_start >= len(forecast_values):
+            forecast_quantity_lead_time = (
+                forecast_values[-1] * forecast_horizon
+                if forecast_values
+                else 0
+            )
+        elif lead_end <= len(forecast_values):
+            forecast_quantity_lead_time = sum(
+                forecast_values[lead_start:lead_end]
+            )
+        else:
+            forecast_quantity_lead_time = sum(
+                forecast_values[lead_start:len(forecast_values)]
+            )
+            extra = lead_end - len(forecast_values)
+            if extra > 0 and forecast_values:
+                forecast_quantity_lead_time += forecast_values[-1] * extra
         forecast_quantity_lead_time = (
-            sum(forecast_values[start:lead_end]) / review_period
+            forecast_quantity_lead_time / review_period
         )
         stock_after = stock_before - float(snapshot.demand)
         if stock_after < 0:
@@ -648,18 +667,35 @@ def test_build_replenishment_decisions_from_optimization_results():
     forecast_values = [row.forecast for row in rows]
     expected = []
     running_stock = rows[0].current_stock
+    lead_offset = max(1, rows[0].lead_time)
     for index, snapshot in enumerate(simulation.snapshots):
         start = index
         end = min(start + window, len(forecast_values))
         forecast_quantity = sum(forecast_values[start:end]) / window
-        total_horizon = rows[0].lead_time + window
+        total_horizon = window
         if window > 1:
-            lead_end = min(start + total_horizon, len(forecast_values))
-            forecast_quantity_lead_time = (
-                sum(forecast_values[start:lead_end]) / window
-            )
+            lead_start = start + lead_offset
+            lead_end = lead_start + total_horizon
+            if lead_start >= len(forecast_values):
+                forecast_quantity_lead_time = (
+                    forecast_values[-1] * total_horizon
+                    if forecast_values
+                    else 0
+                )
+            elif lead_end <= len(forecast_values):
+                forecast_quantity_lead_time = sum(
+                    forecast_values[lead_start:lead_end]
+                )
+            else:
+                forecast_quantity_lead_time = sum(
+                    forecast_values[lead_start:len(forecast_values)]
+                )
+                extra = lead_end - len(forecast_values)
+                if extra > 0 and forecast_values:
+                    forecast_quantity_lead_time += forecast_values[-1] * extra
+            forecast_quantity_lead_time = forecast_quantity_lead_time / window
         else:
-            start_period = start + 1
+            start_period = start + lead_offset
             end_period = start_period + max(1, total_horizon)
             if end_period <= len(forecast_values):
                 forecast_quantity_lead_time = sum(
@@ -859,6 +895,7 @@ def test_build_replenishment_decisions_from_simulations_merges_metadata():
 
     running_stock = rows[0].current_stock
     forecast_values = [row.forecast for row in rows]
+    lead_offset = max(1, rows[0].lead_time)
     lead_time_factor = math.sqrt(rows[0].lead_time + 1)
     safety_stock_values = [
         0.0,
@@ -869,8 +906,8 @@ def test_build_replenishment_decisions_from_simulations_merges_metadata():
         stock_before = float(running_stock) + float(snapshot.received)
         starting_stock = int(round(stock_before))
         forecast_quantity = forecast_values[index]
-        total_horizon = rows[0].lead_time + 1
-        start_period = index + 1
+        total_horizon = 1
+        start_period = index + lead_offset
         end_period = start_period + max(1, total_horizon)
         if end_period <= len(forecast_values):
             forecast_quantity_lead_time = sum(

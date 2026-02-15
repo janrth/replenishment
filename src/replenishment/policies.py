@@ -236,10 +236,8 @@ class ForecastBasedPolicy:
             protection_horizon if protection_horizon > 0 else 1
         )
         if self._service_level_mode_normalized == "fill_rate":
-            total_horizon = self.lead_time + (
-                self.forecast_horizon if self.forecast_horizon is not None else 1
-            )
-            start_period = period + 1
+            total_horizon = protection_horizon
+            start_period = period + max(1, self.lead_time)
             forecast_qty = self._forecast_sum_for(start_period, total_horizon)
             return _safety_stock_from_fill_rate(
                 fill_rate=self.service_level_factor,
@@ -253,10 +251,10 @@ class ForecastBasedPolicy:
         if self.review_period is not None and self.review_period > 1:
             if state.period % self.review_period != 0:
                 return 0
-        total_horizon = self.lead_time + (
+        total_horizon = (
             self.forecast_horizon if self.forecast_horizon is not None else 1
         )
-        start_period = state.period + 1
+        start_period = state.period + max(1, self.lead_time)
         forecast_qty = self._forecast_sum_for(start_period, total_horizon)
         safety_stock = self._safety_stock(state.period)
         target = forecast_qty + safety_stock
@@ -265,7 +263,7 @@ class ForecastBasedPolicy:
 
 @dataclass(frozen=True)
 class ForecastSeriesPolicy:
-    """Order to a deterministic forecast series for the lead time horizon."""
+    """Order to a deterministic forecast series for the forecast horizon."""
 
     forecast: Iterable[int] | DemandModel
     lead_time: int = 0
@@ -328,10 +326,10 @@ class ForecastSeriesPolicy:
         if self.review_period is not None and self.review_period > 1:
             if state.period % self.review_period != 0:
                 return 0
-        total_horizon = self.lead_time + (
+        total_horizon = (
             self.forecast_horizon if self.forecast_horizon is not None else 1
         )
-        start_period = state.period + 1
+        start_period = state.period + max(1, self.lead_time)
         forecast_qty = self._forecast_sum_for(start_period, total_horizon)
         return max(0, int(math.ceil(forecast_qty - state.inventory_position)))
 
@@ -478,10 +476,10 @@ class PointForecastOptimizationPolicy:
         if self.review_period is not None and self.review_period > 1:
             if state.period % self.review_period != 0:
                 return 0
-        total_horizon = self.lead_time + (
+        total_horizon = (
             self.forecast_horizon if self.forecast_horizon is not None else 1
         )
-        start_period = state.period + 1
+        start_period = state.period + max(1, self.lead_time)
         forecast_qty = self._forecast_sum_for(start_period, total_horizon)
         rmse = self._rmse(state.period)
         protection_horizon = self.lead_time + (
@@ -674,7 +672,7 @@ class RopPointForecastOptimizationPolicy:
 
 @dataclass(frozen=True)
 class LeadTimeForecastOptimizationPolicy:
-    """Order up to lead-time forecast sum plus safety stock using RMSE error."""
+    """Order up to the forecast-horizon sum plus safety stock using RMSE error."""
 
     forecast: Iterable[int] | DemandModel
     actuals: Iterable[int] | DemandModel
@@ -811,10 +809,10 @@ class LeadTimeForecastOptimizationPolicy:
         if self.review_period is not None and self.review_period > 1:
             if state.period % self.review_period != 0:
                 return 0
-        total_horizon = self.lead_time + (
+        total_horizon = (
             self.forecast_horizon if self.forecast_horizon is not None else 1
         )
-        start_period = state.period + 1
+        start_period = state.period + max(1, self.lead_time)
         forecast_qty = self._forecast_sum_for(start_period, total_horizon)
         rmse = self._rmse(state.period)
         protection_horizon = self.lead_time + (
@@ -901,10 +899,10 @@ class PercentileForecastOptimizationPolicy:
         if self.review_period is not None and self.review_period > 1:
             if state.period % self.review_period != 0:
                 return 0
-        total_horizon = self.lead_time + (
+        total_horizon = (
             self.forecast_horizon if self.forecast_horizon is not None else 1
         )
-        start_period = state.period + 1
+        start_period = state.period + max(1, self.lead_time)
         forecast_qty = self._forecast_sum_for(start_period, total_horizon)
         return max(0, int(math.ceil(forecast_qty - state.inventory_position)))
 
@@ -1066,7 +1064,7 @@ class EmpiricalMultiplierPolicy:
         if self.review_period is not None and self.review_period > 1:
             if state.period % self.review_period != 0:
                 return 0
-        total_horizon = self.lead_time + (
+        total_horizon = (
             self.forecast_horizon if self.forecast_horizon is not None else 1
         )
         forecast_qty = self._forecast_sum_for(state.period + 1, total_horizon)
