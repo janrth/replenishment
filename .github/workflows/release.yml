@@ -1,5 +1,9 @@
 name: Release
 
+concurrency:
+  group: release-${{ github.event.inputs.git_ref || github.ref }}
+  cancel-in-progress: false
+
 on:
   release:
     types: [published]
@@ -72,3 +76,6 @@ jobs:
 
       - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
+          verbose: true
