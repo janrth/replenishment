@@ -489,9 +489,12 @@ class PointForecastOptimizationPolicy:
             protection_horizon if protection_horizon > 0 else 1
         )
         if self._service_level_mode_normalized == "fill_rate":
+            fill_rate_forecast_qty = self._forecast_sum_for(
+                start_period, protection_horizon
+            )
             safety_stock = _safety_stock_from_fill_rate(
                 fill_rate=self.service_level_factor,
-                forecast_qty=forecast_qty,
+                forecast_qty=fill_rate_forecast_qty,
                 rmse=rmse,
                 horizon=protection_horizon,
             )
