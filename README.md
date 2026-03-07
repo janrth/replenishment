@@ -32,6 +32,12 @@ This README focuses on two visual workflows:
 This example optimizes the safety stock factor on a backtest window, then
 applies the learned policy to the evaluation horizon.
 
+If you want extra protection when forecasted demand spikes (for example,
+Black Friday), set `demand_buffer_strength` on point-forecast policies. The
+effective safety stock becomes `sigma * rmse * sqrt(horizon) * multiplier`,
+where `multiplier` increases when forecast quantity exceeds a baseline
+(`demand_buffer_reference`, or historical mean demand when omitted).
+
 ```python
 from replenishment import (
     generate_standard_simulation_rows,

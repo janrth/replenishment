@@ -81,6 +81,34 @@ def _safety_stock_from_fill_rate(
     return z_value * std_dev
 
 
+def _resolve_buffer_reference(
+    reference: float | None, forecast_values: list[int] | None, horizon: int
+) -> float | None:
+    if reference is not None:
+        return reference if reference > 0 else None
+    if not forecast_values:
+        return None
+    mean_forecast = statistics.fmean(forecast_values)
+    scaled_reference = mean_forecast * max(1, horizon)
+    return scaled_reference if scaled_reference > 0 else None
+
+
+def _demand_buffer_multiplier(
+    *,
+    forecast_qty: float,
+    reference_qty: float | None,
+    strength: float,
+    max_multiplier: float | None,
+) -> float:
+    if strength <= 0 or forecast_qty <= 0 or reference_qty is None or reference_qty <= 0:
+        return 1.0
+    uplift = max(0.0, (forecast_qty / reference_qty) - 1.0)
+    multiplier = 1.0 + (strength * uplift)
+    if max_multiplier is not None:
+        multiplier = min(multiplier, max_multiplier)
+    return max(1.0, multiplier)
+
+
 @dataclass(frozen=True)
 class ReorderPointPolicy:
     """Order up to a fixed quantity when inventory position falls below a point."""
@@ -108,6 +136,9 @@ class ForecastBasedPolicy:
     service_level_factor: float = 1.0
     service_level_mode: str = "factor"
     fixed_rmse: float | None = None
+    demand_buffer_strength: float = 0.0
+    demand_buffer_reference: float | None = None
+    demand_buffer_max_multiplier: float | None = None
     _forecast_model: DemandModel = field(init=False, repr=False)
     _actual_model: DemandModel = field(init=False, repr=False)
     _forecast_values: list[int] | None = field(init=False, repr=False)
@@ -147,6 +178,18 @@ class ForecastBasedPolicy:
         object.__setattr__(self, "aggregation_window", review_period)
         if self.fixed_rmse is not None and self.fixed_rmse < 0:
             raise ValueError("Fixed RMSE must be non-negative.")
+        if self.demand_buffer_strength < 0:
+            raise ValueError("Demand buffer strength must be non-negative.")
+        if (
+            self.demand_buffer_reference is not None
+            and self.demand_buffer_reference <= 0
+        ):
+            raise ValueError("Demand buffer reference must be positive.")
+        if (
+            self.demand_buffer_max_multiplier is not None
+            and self.demand_buffer_max_multiplier < 1
+        ):
+            raise ValueError("Demand buffer max multiplier must be at least 1.")
         normalized_mode = normalize_service_level_mode(self.service_level_mode)
         object.__setattr__(self, "_service_level_mode_normalized", normalized_mode)
         if normalized_mode == "fill_rate":
@@ -235,17 +278,35 @@ class ForecastBasedPolicy:
         lead_time_factor = math.sqrt(
             protection_horizon if protection_horizon > 0 else 1
         )
+        total_horizon = (
+            self.forecast_horizon if self.forecast_horizon is not None else 1
+        )
+        start_period = period + max(1, self.lead_time)
         if self._service_level_mode_normalized == "fill_rate":
-            total_horizon = protection_horizon
-            start_period = period + max(1, self.lead_time)
-            forecast_qty = self._forecast_sum_for(start_period, total_horizon)
-            return _safety_stock_from_fill_rate(
+            forecast_qty = self._forecast_sum_for(start_period, protection_horizon)
+            safety_stock = _safety_stock_from_fill_rate(
                 fill_rate=self.service_level_factor,
                 forecast_qty=forecast_qty,
                 rmse=rmse,
                 horizon=protection_horizon,
             )
-        return self._service_level_multiplier * rmse * lead_time_factor
+        else:
+            forecast_qty = self._forecast_sum_for(start_period, total_horizon)
+            safety_stock = self._service_level_multiplier * rmse * lead_time_factor
+        demand_multiplier = 1.0
+        if self._service_level_mode_normalized != "fill_rate":
+            buffer_reference = _resolve_buffer_reference(
+                self.demand_buffer_reference,
+                self._forecast_values,
+                total_horizon,
+            )
+            demand_multiplier = _demand_buffer_multiplier(
+                forecast_qty=forecast_qty,
+                reference_qty=buffer_reference,
+                strength=self.demand_buffer_strength,
+                max_multiplier=self.demand_buffer_max_multiplier,
+            )
+        return safety_stock * demand_multiplier
 
     def order_quantity_for(self, state: InventoryState) -> int:
         if self.review_period is not None and self.review_period > 1:
@@ -351,6 +412,9 @@ class PointForecastOptimizationPolicy:
     service_level_factor: float = 1.0
     service_level_mode: str = "factor"
     fixed_rmse: float | None = None
+    demand_buffer_strength: float = 0.0
+    demand_buffer_reference: float | None = None
+    demand_buffer_max_multiplier: float | None = None
     _forecast_model: DemandModel = field(init=False, repr=False)
     _actual_model: DemandModel = field(init=False, repr=False)
     _forecast_values: list[int] | None = field(init=False, repr=False)
@@ -390,6 +454,18 @@ class PointForecastOptimizationPolicy:
         object.__setattr__(self, "aggregation_window", review_period)
         if self.fixed_rmse is not None and self.fixed_rmse < 0:
             raise ValueError("Fixed RMSE must be non-negative.")
+        if self.demand_buffer_strength < 0:
+            raise ValueError("Demand buffer strength must be non-negative.")
+        if (
+            self.demand_buffer_reference is not None
+            and self.demand_buffer_reference <= 0
+        ):
+            raise ValueError("Demand buffer reference must be positive.")
+        if (
+            self.demand_buffer_max_multiplier is not None
+            and self.demand_buffer_max_multiplier < 1
+        ):
+            raise ValueError("Demand buffer max multiplier must be at least 1.")
         normalized_mode = normalize_service_level_mode(self.service_level_mode)
         object.__setattr__(self, "_service_level_mode_normalized", normalized_mode)
         if normalized_mode == "fill_rate":
@@ -500,6 +576,19 @@ class PointForecastOptimizationPolicy:
             )
         else:
             safety_stock = self._service_level_multiplier * rmse * lead_time_factor
+        if self._service_level_mode_normalized != "fill_rate":
+            buffer_reference = _resolve_buffer_reference(
+                self.demand_buffer_reference,
+                self._forecast_values,
+                total_horizon,
+            )
+            demand_multiplier = _demand_buffer_multiplier(
+                forecast_qty=forecast_qty,
+                reference_qty=buffer_reference,
+                strength=self.demand_buffer_strength,
+                max_multiplier=self.demand_buffer_max_multiplier,
+            )
+            safety_stock *= demand_multiplier
         target = forecast_qty + safety_stock
         return max(0, int(math.ceil(target - state.inventory_position)))
 
@@ -518,6 +607,9 @@ class RopPointForecastOptimizationPolicy:
     service_level_factor: float = 1.0
     service_level_mode: str = "factor"
     fixed_rmse: float | None = None
+    demand_buffer_strength: float = 0.0
+    demand_buffer_reference: float | None = None
+    demand_buffer_max_multiplier: float | None = None
     _forecast_model: DemandModel = field(init=False, repr=False)
     _actual_model: DemandModel = field(init=False, repr=False)
     _forecast_values: list[int] | None = field(init=False, repr=False)
@@ -557,6 +649,18 @@ class RopPointForecastOptimizationPolicy:
         object.__setattr__(self, "aggregation_window", review_period)
         if self.fixed_rmse is not None and self.fixed_rmse < 0:
             raise ValueError("Fixed RMSE must be non-negative.")
+        if self.demand_buffer_strength < 0:
+            raise ValueError("Demand buffer strength must be non-negative.")
+        if (
+            self.demand_buffer_reference is not None
+            and self.demand_buffer_reference <= 0
+        ):
+            raise ValueError("Demand buffer reference must be positive.")
+        if (
+            self.demand_buffer_max_multiplier is not None
+            and self.demand_buffer_max_multiplier < 1
+        ):
+            raise ValueError("Demand buffer max multiplier must be at least 1.")
         normalized_mode = normalize_service_level_mode(self.service_level_mode)
         object.__setattr__(self, "_service_level_mode_normalized", normalized_mode)
         if normalized_mode == "fill_rate":
@@ -666,6 +770,19 @@ class RopPointForecastOptimizationPolicy:
             )
         else:
             safety_stock = self._service_level_multiplier * rmse * lead_time_factor
+        if self._service_level_mode_normalized != "fill_rate":
+            buffer_reference = _resolve_buffer_reference(
+                self.demand_buffer_reference,
+                self._forecast_values,
+                lead_horizon,
+            )
+            demand_multiplier = _demand_buffer_multiplier(
+                forecast_qty=lead_demand,
+                reference_qty=buffer_reference,
+                strength=self.demand_buffer_strength,
+                max_multiplier=self.demand_buffer_max_multiplier,
+            )
+            safety_stock *= demand_multiplier
         reorder_point = lead_demand + safety_stock
         order_up_to = reorder_point + cycle_stock
         if state.inventory_position <= reorder_point:
@@ -687,6 +804,9 @@ class LeadTimeForecastOptimizationPolicy:
     service_level_factor: float = 1.0
     service_level_mode: str = "factor"
     fixed_rmse: float | None = None
+    demand_buffer_strength: float = 0.0
+    demand_buffer_reference: float | None = None
+    demand_buffer_max_multiplier: float | None = None
     _forecast_model: DemandModel = field(init=False, repr=False)
     _actual_model: DemandModel = field(init=False, repr=False)
     _forecast_values: list[int] | None = field(init=False, repr=False)
@@ -726,6 +846,18 @@ class LeadTimeForecastOptimizationPolicy:
         object.__setattr__(self, "aggregation_window", review_period)
         if self.fixed_rmse is not None and self.fixed_rmse < 0:
             raise ValueError("Fixed RMSE must be non-negative.")
+        if self.demand_buffer_strength < 0:
+            raise ValueError("Demand buffer strength must be non-negative.")
+        if (
+            self.demand_buffer_reference is not None
+            and self.demand_buffer_reference <= 0
+        ):
+            raise ValueError("Demand buffer reference must be positive.")
+        if (
+            self.demand_buffer_max_multiplier is not None
+            and self.demand_buffer_max_multiplier < 1
+        ):
+            raise ValueError("Demand buffer max multiplier must be at least 1.")
         normalized_mode = normalize_service_level_mode(self.service_level_mode)
         object.__setattr__(self, "_service_level_mode_normalized", normalized_mode)
         if normalized_mode == "fill_rate":
@@ -833,6 +965,19 @@ class LeadTimeForecastOptimizationPolicy:
             )
         else:
             safety_stock = self._service_level_multiplier * rmse * lead_time_factor
+        if self._service_level_mode_normalized != "fill_rate":
+            buffer_reference = _resolve_buffer_reference(
+                self.demand_buffer_reference,
+                self._forecast_values,
+                total_horizon,
+            )
+            demand_multiplier = _demand_buffer_multiplier(
+                forecast_qty=forecast_qty,
+                reference_qty=buffer_reference,
+                strength=self.demand_buffer_strength,
+                max_multiplier=self.demand_buffer_max_multiplier,
+            )
+            safety_stock *= demand_multiplier
         target = forecast_qty + safety_stock
         return max(0, int(math.ceil(target - state.inventory_position)))
 
