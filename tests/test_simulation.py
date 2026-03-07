@@ -1,3 +1,5 @@
+import pytest
+
 from replenishment import (
     ArticleSimulationConfig,
     EmpiricalMultiplierPolicy,
@@ -93,6 +95,56 @@ def test_point_forecast_policy_uses_last_forecast_value_for_horizon():
     state_period5 = InventoryState(period=5, on_hand=0, on_order=0, backorders=0)
 
     assert policy.order_quantity_for(state_period5) == 23
+
+
+def test_point_forecast_policy_scales_safety_stock_with_high_forecast():
+    baseline = PointForecastOptimizationPolicy(
+        forecast=[10, 10, 10, 10, 10],
+        actuals=[10, 10, 10, 10, 10],
+        lead_time=1,
+        forecast_horizon=2,
+        service_level_factor=1.0,
+        fixed_rmse=4.0,
+        demand_buffer_reference=20.0,
+        demand_buffer_strength=0.5,
+    )
+    peak = PointForecastOptimizationPolicy(
+        forecast=[10, 10, 10, 20, 20],
+        actuals=[10, 10, 10, 10, 10],
+        lead_time=1,
+        forecast_horizon=2,
+        service_level_factor=1.0,
+        fixed_rmse=4.0,
+        demand_buffer_reference=20.0,
+        demand_buffer_strength=0.5,
+    )
+    state = InventoryState(period=1, on_hand=0, on_order=0, backorders=0)
+
+    assert baseline.order_quantity_for(state) == 27
+    assert peak.order_quantity_for(state) == 39
+
+
+def test_point_forecast_policy_rejects_invalid_demand_buffer_values():
+    with pytest.raises(ValueError, match="Demand buffer strength"):
+        PointForecastOptimizationPolicy(
+            forecast=[10, 10],
+            actuals=[10, 10],
+            demand_buffer_strength=-0.1,
+        )
+
+    with pytest.raises(ValueError, match="Demand buffer reference"):
+        PointForecastOptimizationPolicy(
+            forecast=[10, 10],
+            actuals=[10, 10],
+            demand_buffer_reference=0.0,
+        )
+
+    with pytest.raises(ValueError, match="Demand buffer max multiplier"):
+        PointForecastOptimizationPolicy(
+            forecast=[10, 10],
+            actuals=[10, 10],
+            demand_buffer_max_multiplier=0.5,
+        )
 
 
 def test_point_forecast_fill_rate_uses_protection_window_demand():
