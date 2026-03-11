@@ -21,6 +21,8 @@ from .policies import (
     RopEmpiricalMultiplierPolicy,
     RopPercentileForecastOptimizationPolicy,
     RopPointForecastOptimizationPolicy,
+    SAFETY_STOCK_METHOD_K_RMSE,
+    normalize_safety_stock_method,
 )
 from .service_levels import normalize_service_level_mode
 from .simulation import (
@@ -37,6 +39,7 @@ def _attach_metadata(
     *,
     service_level_factor: float | None = None,
     service_level_mode: str | None = None,
+    safety_stock_method: str | None = None,
     aggregation_window: int | None = None,
     review_period: int | None = None,
     forecast_horizon: int | None = None,
@@ -56,6 +59,13 @@ def _attach_metadata(
             service_level_mode
             if service_level_mode is not None
             else base.service_level_mode
+            if base is not None
+            else None
+        ),
+        safety_stock_method=(
+            safety_stock_method
+            if safety_stock_method is not None
+            else base.safety_stock_method
             if base is not None
             else None
         ),
@@ -123,6 +133,14 @@ def _rmse_from_series(actuals: Iterable[int], forecasts: Iterable[int]) -> float
 @dataclass(frozen=True)
 class PointForecastOptimizationResult:
     service_level_factor: float
+    simulation: SimulationResult
+
+
+@dataclass(frozen=True)
+class KRmseFillRateOptimizationResult:
+    k: float
+    meets_fill_rate_target: bool
+    achieved_fill_rate: float
     simulation: SimulationResult
 
 
@@ -237,6 +255,7 @@ def _candidate_policy_for(
     mode: str,
     fixed_rmse: float | None = None,
     aggregation_window: int | None = None,
+    safety_stock_method: str | None = None,
 ) -> (
     PointForecastOptimizationPolicy
     | LeadTimeForecastOptimizationPolicy
@@ -257,6 +276,11 @@ def _candidate_policy_for(
         if aggregation_window is not None
         else getattr(policy, "rmse_window", None)
     )
+    selected_safety_stock_method = (
+        normalize_safety_stock_method(safety_stock_method)
+        if safety_stock_method is not None
+        else normalize_safety_stock_method(getattr(policy, "safety_stock_method", None))
+    )
     if isinstance(policy, LeadTimeForecastOptimizationPolicy):
         return LeadTimeForecastOptimizationPolicy(
             forecast=forecast,
@@ -272,6 +296,7 @@ def _candidate_policy_for(
             rmse_window=rmse_window,
             service_level_factor=factor,
             service_level_mode=mode,
+            safety_stock_method=selected_safety_stock_method,
             fixed_rmse=fixed_rmse,
         )
     if isinstance(policy, RopPointForecastOptimizationPolicy):
@@ -289,6 +314,7 @@ def _candidate_policy_for(
             rmse_window=rmse_window,
             service_level_factor=factor,
             service_level_mode=mode,
+            safety_stock_method=selected_safety_stock_method,
             fixed_rmse=fixed_rmse,
         )
     return PointForecastOptimizationPolicy(
@@ -305,6 +331,7 @@ def _candidate_policy_for(
         rmse_window=rmse_window,
         service_level_factor=factor,
         service_level_mode=mode,
+        safety_stock_method=selected_safety_stock_method,
         fixed_rmse=fixed_rmse,
     )
 
@@ -313,6 +340,7 @@ def optimize_service_level_factors(
     articles: Mapping[str, ArticleSimulationConfig],
     candidate_factors: Iterable[float],
     service_level_mode: str | None = None,
+    safety_stock_method: str | None = None,
 ) -> dict[str, PointForecastOptimizationResult]:
     """Pick the point-forecast safety stock factor that minimizes total cost."""
     factors = list(candidate_factors)
@@ -344,6 +372,7 @@ def optimize_service_level_factors(
                 factor=factor,
                 mode=mode,
                 fixed_rmse=getattr(policy, "fixed_rmse", None),
+                safety_stock_method=safety_stock_method,
             )
             simulation = simulate_replenishment(
                 periods=config.periods,
@@ -360,6 +389,7 @@ def optimize_service_level_factors(
                 simulation,
                 service_level_factor=factor,
                 service_level_mode=mode,
+                safety_stock_method=getattr(candidate_policy, "safety_stock_method", None),
                 aggregation_window=getattr(candidate_policy, "aggregation_window", None),
                 review_period=getattr(candidate_policy, "review_period", None),
                 forecast_horizon=getattr(candidate_policy, "forecast_horizon", None),
@@ -388,6 +418,119 @@ def point_forecast_optimisation(
 ) -> dict[str, PointForecastOptimizationResult]:
     """Alias for optimizing point-forecast safety stock factors."""
     return optimize_service_level_factors(articles, candidate_factors)
+
+
+def optimize_k_rmse_factors(
+    articles: Mapping[str, ArticleSimulationConfig],
+    candidate_k: Iterable[float],
+) -> dict[str, PointForecastOptimizationResult]:
+    """Pick k in safety_stock = k * RMSE by minimizing total cost."""
+    return optimize_service_level_factors(
+        articles,
+        candidate_factors=candidate_k,
+        service_level_mode="factor",
+        safety_stock_method=SAFETY_STOCK_METHOD_K_RMSE,
+    )
+
+
+def optimize_k_rmse_factors_for_fill_rate(
+    articles: Mapping[str, ArticleSimulationConfig],
+    candidate_k: Iterable[float],
+    target_fill_rate: float,
+) -> dict[str, KRmseFillRateOptimizationResult]:
+    """Pick k for safety_stock = k * RMSE with a fill-rate target.
+
+    Chooses the lowest-cost candidate that meets `fill_rate >= target_fill_rate`.
+    If none meet target, returns the highest-fill-rate candidate (cost tie-break).
+    """
+    if target_fill_rate <= 0 or target_fill_rate > 1:
+        raise ValueError("Target fill rate must be in (0, 1].")
+    factors = list(candidate_k)
+    _validate_service_level_candidates(factors, "factor")
+
+    results: dict[str, KRmseFillRateOptimizationResult] = {}
+    for article_id, config in articles.items():
+        policy = config.policy
+        if not isinstance(
+            policy,
+            (
+                ForecastBasedPolicy,
+                PointForecastOptimizationPolicy,
+                LeadTimeForecastOptimizationPolicy,
+                RopPointForecastOptimizationPolicy,
+            ),
+        ):
+            raise TypeError(
+                "k*RMSE optimization requires point-forecast policies."
+            )
+        best_meeting_target: KRmseFillRateOptimizationResult | None = None
+        best_fallback: KRmseFillRateOptimizationResult | None = None
+        for k in factors:
+            candidate_policy = _candidate_policy_for(
+                policy,
+                forecast=policy.forecast,
+                actuals=policy.actuals,
+                lead_time=config.lead_time,
+                factor=k,
+                mode="factor",
+                fixed_rmse=getattr(policy, "fixed_rmse", None),
+                safety_stock_method=SAFETY_STOCK_METHOD_K_RMSE,
+            )
+            simulation = simulate_replenishment(
+                periods=config.periods,
+                demand=config.demand,
+                initial_on_hand=config.initial_on_hand,
+                lead_time=config.lead_time,
+                policy=candidate_policy,
+                holding_cost_per_unit=config.holding_cost_per_unit,
+                stockout_cost_per_unit=config.stockout_cost_per_unit,
+                order_cost_per_order=config.order_cost_per_order,
+                order_cost_per_unit=config.order_cost_per_unit,
+            )
+            simulation = _attach_metadata(
+                simulation,
+                service_level_factor=k,
+                service_level_mode="factor",
+                safety_stock_method=getattr(candidate_policy, "safety_stock_method", None),
+                aggregation_window=getattr(candidate_policy, "aggregation_window", None),
+                review_period=getattr(candidate_policy, "review_period", None),
+                forecast_horizon=getattr(candidate_policy, "forecast_horizon", None),
+                rmse_window=getattr(candidate_policy, "rmse_window", None),
+            )
+            candidate = KRmseFillRateOptimizationResult(
+                k=k,
+                meets_fill_rate_target=simulation.summary.fill_rate >= target_fill_rate,
+                achieved_fill_rate=simulation.summary.fill_rate,
+                simulation=simulation,
+            )
+            if candidate.meets_fill_rate_target:
+                if best_meeting_target is None:
+                    best_meeting_target = candidate
+                elif (
+                    candidate.simulation.summary.total_cost
+                    < best_meeting_target.simulation.summary.total_cost
+                ):
+                    best_meeting_target = candidate
+                continue
+            if best_fallback is None:
+                best_fallback = candidate
+                continue
+            if candidate.achieved_fill_rate > best_fallback.achieved_fill_rate:
+                best_fallback = candidate
+                continue
+            if (
+                candidate.achieved_fill_rate == best_fallback.achieved_fill_rate
+                and candidate.simulation.summary.total_cost
+                < best_fallback.simulation.summary.total_cost
+            ):
+                best_fallback = candidate
+        if best_meeting_target is not None:
+            results[article_id] = best_meeting_target
+        elif best_fallback is not None:
+            results[article_id] = best_fallback
+        else:
+            raise RuntimeError("No optimization result computed.")
+    return results
 
 
 def optimize_forecast_targets(
@@ -525,6 +668,7 @@ def evaluate_service_level_factor_costs(
     articles: Mapping[str, ArticleSimulationConfig],
     candidate_factors: Iterable[float],
     service_level_mode: str | None = None,
+    safety_stock_method: str | None = None,
 ) -> dict[str, dict[float, float]]:
     """Return total costs for each service-level factor per article."""
     factors = list(candidate_factors)
@@ -556,6 +700,7 @@ def evaluate_service_level_factor_costs(
                 factor=factor,
                 mode=mode,
                 fixed_rmse=getattr(policy, "fixed_rmse", None),
+                safety_stock_method=safety_stock_method,
             )
             simulation = simulate_replenishment(
                 periods=config.periods,
@@ -578,6 +723,7 @@ def evaluate_aggregation_and_service_level_factor_costs(
     candidate_windows: Iterable[int],
     candidate_factors: Iterable[float],
     service_level_mode: str | None = None,
+    safety_stock_method: str | None = None,
 ) -> dict[str, dict[int, dict[float, float]]]:
     """Return total costs for each window and service-level factor per article."""
     windows = list(candidate_windows)
@@ -618,6 +764,7 @@ def evaluate_aggregation_and_service_level_factor_costs(
                     mode=mode,
                     fixed_rmse=getattr(policy, "fixed_rmse", None),
                     aggregation_window=window,
+                    safety_stock_method=safety_stock_method,
                 )
                 simulation = simulate_replenishment(
                     periods=config.periods,
@@ -797,6 +944,7 @@ def optimize_aggregation_and_service_level_factors(
     candidate_windows: Iterable[int],
     candidate_factors: Iterable[float],
     service_level_mode: str | None = None,
+    safety_stock_method: str | None = None,
 ) -> dict[str, AggregationServiceLevelOptimizationResult]:
     """Pick the aggregation window and service-level factor that minimize total cost."""
     windows = list(candidate_windows)
@@ -837,6 +985,7 @@ def optimize_aggregation_and_service_level_factors(
                     mode=mode,
                     fixed_rmse=getattr(policy, "fixed_rmse", None),
                     aggregation_window=window,
+                    safety_stock_method=safety_stock_method,
                 )
                 simulation = simulate_replenishment(
                     periods=config.periods,
@@ -853,6 +1002,7 @@ def optimize_aggregation_and_service_level_factors(
                     simulation,
                     service_level_factor=factor,
                     service_level_mode=mode,
+                    safety_stock_method=getattr(candidate_policy, "safety_stock_method", None),
                     aggregation_window=window,
                     review_period=getattr(candidate_policy, "review_period", None),
                     forecast_horizon=getattr(candidate_policy, "forecast_horizon", None),

@@ -56,6 +56,7 @@ class SimulationSummary:
 class SimulationMetadata:
     service_level_factor: float | None = None
     service_level_mode: str | None = None
+    safety_stock_method: str | None = None
     aggregation_window: int | None = None
     review_period: int | None = None
     forecast_horizon: int | None = None

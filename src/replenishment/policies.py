@@ -14,6 +14,33 @@ from .service_levels import (
     service_level_multiplier,
 )
 
+SAFETY_STOCK_METHOD_SQRT_HORIZON = "sqrt_horizon"
+SAFETY_STOCK_METHOD_K_RMSE = "k_rmse"
+
+_SAFETY_STOCK_METHOD_ALIASES = {
+    SAFETY_STOCK_METHOD_SQRT_HORIZON: SAFETY_STOCK_METHOD_SQRT_HORIZON,
+    "legacy": SAFETY_STOCK_METHOD_SQRT_HORIZON,
+    "legacy_scaled": SAFETY_STOCK_METHOD_SQRT_HORIZON,
+    "scaled_rmse": SAFETY_STOCK_METHOD_SQRT_HORIZON,
+    "horizon_scaled": SAFETY_STOCK_METHOD_SQRT_HORIZON,
+    SAFETY_STOCK_METHOD_K_RMSE: SAFETY_STOCK_METHOD_K_RMSE,
+    "raw_rmse": SAFETY_STOCK_METHOD_K_RMSE,
+    "raw": SAFETY_STOCK_METHOD_K_RMSE,
+    "k*rmse": SAFETY_STOCK_METHOD_K_RMSE,
+}
+
+
+def normalize_safety_stock_method(method: str | None) -> str:
+    if method is None:
+        return SAFETY_STOCK_METHOD_SQRT_HORIZON
+    normalized = method.strip().lower()
+    if normalized in _SAFETY_STOCK_METHOD_ALIASES:
+        return _SAFETY_STOCK_METHOD_ALIASES[normalized]
+    raise ValueError(
+        "safety_stock_method must be one of: "
+        f"{', '.join(sorted(_SAFETY_STOCK_METHOD_ALIASES))}."
+    )
+
 
 def _normalize_series(series: Iterable[int] | DemandModel) -> DemandModel:
     if callable(series):
@@ -107,6 +134,7 @@ class ForecastBasedPolicy:
     rmse_window: int | None = None
     service_level_factor: float = 1.0
     service_level_mode: str = "factor"
+    safety_stock_method: str = SAFETY_STOCK_METHOD_SQRT_HORIZON
     fixed_rmse: float | None = None
     _forecast_model: DemandModel = field(init=False, repr=False)
     _actual_model: DemandModel = field(init=False, repr=False)
@@ -114,6 +142,7 @@ class ForecastBasedPolicy:
     _actual_values: list[int] | None = field(init=False, repr=False)
     _service_level_multiplier: float = field(init=False, repr=False)
     _service_level_mode_normalized: str = field(init=False, repr=False)
+    _safety_stock_method_normalized: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.lead_time < 0:
@@ -149,6 +178,11 @@ class ForecastBasedPolicy:
             raise ValueError("Fixed RMSE must be non-negative.")
         normalized_mode = normalize_service_level_mode(self.service_level_mode)
         object.__setattr__(self, "_service_level_mode_normalized", normalized_mode)
+        object.__setattr__(
+            self,
+            "_safety_stock_method_normalized",
+            normalize_safety_stock_method(self.safety_stock_method),
+        )
         if normalized_mode == "fill_rate":
             object.__setattr__(self, "_service_level_multiplier", 0.0)
         else:
@@ -245,6 +279,8 @@ class ForecastBasedPolicy:
                 rmse=rmse,
                 horizon=protection_horizon,
             )
+        if self._safety_stock_method_normalized == SAFETY_STOCK_METHOD_K_RMSE:
+            return self._service_level_multiplier * rmse
         return self._service_level_multiplier * rmse * lead_time_factor
 
     def order_quantity_for(self, state: InventoryState) -> int:
@@ -350,6 +386,7 @@ class PointForecastOptimizationPolicy:
     rmse_window: int | None = None
     service_level_factor: float = 1.0
     service_level_mode: str = "factor"
+    safety_stock_method: str = SAFETY_STOCK_METHOD_SQRT_HORIZON
     fixed_rmse: float | None = None
     _forecast_model: DemandModel = field(init=False, repr=False)
     _actual_model: DemandModel = field(init=False, repr=False)
@@ -357,6 +394,7 @@ class PointForecastOptimizationPolicy:
     _actual_values: list[int] | None = field(init=False, repr=False)
     _service_level_multiplier: float = field(init=False, repr=False)
     _service_level_mode_normalized: str = field(init=False, repr=False)
+    _safety_stock_method_normalized: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.lead_time < 0:
@@ -392,6 +430,11 @@ class PointForecastOptimizationPolicy:
             raise ValueError("Fixed RMSE must be non-negative.")
         normalized_mode = normalize_service_level_mode(self.service_level_mode)
         object.__setattr__(self, "_service_level_mode_normalized", normalized_mode)
+        object.__setattr__(
+            self,
+            "_safety_stock_method_normalized",
+            normalize_safety_stock_method(self.safety_stock_method),
+        )
         if normalized_mode == "fill_rate":
             object.__setattr__(self, "_service_level_multiplier", 0.0)
         else:
@@ -499,7 +542,10 @@ class PointForecastOptimizationPolicy:
                 horizon=protection_horizon,
             )
         else:
-            safety_stock = self._service_level_multiplier * rmse * lead_time_factor
+            if self._safety_stock_method_normalized == SAFETY_STOCK_METHOD_K_RMSE:
+                safety_stock = self._service_level_multiplier * rmse
+            else:
+                safety_stock = self._service_level_multiplier * rmse * lead_time_factor
         target = forecast_qty + safety_stock
         return max(0, int(math.ceil(target - state.inventory_position)))
 
@@ -517,6 +563,7 @@ class RopPointForecastOptimizationPolicy:
     rmse_window: int | None = None
     service_level_factor: float = 1.0
     service_level_mode: str = "factor"
+    safety_stock_method: str = SAFETY_STOCK_METHOD_SQRT_HORIZON
     fixed_rmse: float | None = None
     _forecast_model: DemandModel = field(init=False, repr=False)
     _actual_model: DemandModel = field(init=False, repr=False)
@@ -524,6 +571,7 @@ class RopPointForecastOptimizationPolicy:
     _actual_values: list[int] | None = field(init=False, repr=False)
     _service_level_multiplier: float = field(init=False, repr=False)
     _service_level_mode_normalized: str = field(init=False, repr=False)
+    _safety_stock_method_normalized: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.lead_time < 0:
@@ -559,6 +607,11 @@ class RopPointForecastOptimizationPolicy:
             raise ValueError("Fixed RMSE must be non-negative.")
         normalized_mode = normalize_service_level_mode(self.service_level_mode)
         object.__setattr__(self, "_service_level_mode_normalized", normalized_mode)
+        object.__setattr__(
+            self,
+            "_safety_stock_method_normalized",
+            normalize_safety_stock_method(self.safety_stock_method),
+        )
         if normalized_mode == "fill_rate":
             object.__setattr__(self, "_service_level_multiplier", 0.0)
         else:
@@ -665,7 +718,10 @@ class RopPointForecastOptimizationPolicy:
                 horizon=lead_horizon,
             )
         else:
-            safety_stock = self._service_level_multiplier * rmse * lead_time_factor
+            if self._safety_stock_method_normalized == SAFETY_STOCK_METHOD_K_RMSE:
+                safety_stock = self._service_level_multiplier * rmse
+            else:
+                safety_stock = self._service_level_multiplier * rmse * lead_time_factor
         reorder_point = lead_demand + safety_stock
         order_up_to = reorder_point + cycle_stock
         if state.inventory_position <= reorder_point:
@@ -686,6 +742,7 @@ class LeadTimeForecastOptimizationPolicy:
     rmse_window: int | None = None
     service_level_factor: float = 1.0
     service_level_mode: str = "factor"
+    safety_stock_method: str = SAFETY_STOCK_METHOD_SQRT_HORIZON
     fixed_rmse: float | None = None
     _forecast_model: DemandModel = field(init=False, repr=False)
     _actual_model: DemandModel = field(init=False, repr=False)
@@ -693,6 +750,7 @@ class LeadTimeForecastOptimizationPolicy:
     _actual_values: list[int] | None = field(init=False, repr=False)
     _service_level_multiplier: float = field(init=False, repr=False)
     _service_level_mode_normalized: str = field(init=False, repr=False)
+    _safety_stock_method_normalized: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.lead_time < 0:
@@ -728,6 +786,11 @@ class LeadTimeForecastOptimizationPolicy:
             raise ValueError("Fixed RMSE must be non-negative.")
         normalized_mode = normalize_service_level_mode(self.service_level_mode)
         object.__setattr__(self, "_service_level_mode_normalized", normalized_mode)
+        object.__setattr__(
+            self,
+            "_safety_stock_method_normalized",
+            normalize_safety_stock_method(self.safety_stock_method),
+        )
         if normalized_mode == "fill_rate":
             object.__setattr__(self, "_service_level_multiplier", 0.0)
         else:
@@ -832,7 +895,10 @@ class LeadTimeForecastOptimizationPolicy:
                 horizon=protection_horizon,
             )
         else:
-            safety_stock = self._service_level_multiplier * rmse * lead_time_factor
+            if self._safety_stock_method_normalized == SAFETY_STOCK_METHOD_K_RMSE:
+                safety_stock = self._service_level_multiplier * rmse
+            else:
+                safety_stock = self._service_level_multiplier * rmse * lead_time_factor
         target = forecast_qty + safety_stock
         return max(0, int(math.ceil(target - state.inventory_position)))
 
