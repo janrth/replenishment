@@ -9,6 +9,7 @@ from replenishment import (
     StandardSimulationRow,
     build_percentile_forecast_candidates,
     build_percentile_forecast_candidates_from_standard_rows,
+    build_lead_time_forecast_article_configs_from_standard_rows,
     build_point_forecast_article_configs,
     build_point_forecast_article_configs_from_standard_rows,
     build_replenishment_decisions_from_optimization_results,
@@ -33,6 +34,39 @@ def _write_csv(path, header, rows):
         writer = csv.writer(handle)
         writer.writerow(header)
         writer.writerows(rows)
+
+
+def _standard_rows_for_method_validation():
+    return [
+        StandardSimulationRow(
+            unique_id="A",
+            ds="2024-01-01",
+            demand=10,
+            forecast=12,
+            actuals=11,
+            holding_cost_per_unit=0.5,
+            stockout_cost_per_unit=3.0,
+            order_cost_per_order=2.0,
+            lead_time=1,
+            initial_on_hand=5,
+            current_stock=8,
+            forecast_percentiles={},
+        ),
+        StandardSimulationRow(
+            unique_id="A",
+            ds="2024-01-02",
+            demand=9,
+            forecast=11,
+            actuals=10,
+            holding_cost_per_unit=0.5,
+            stockout_cost_per_unit=3.0,
+            order_cost_per_order=2.0,
+            lead_time=1,
+            initial_on_hand=5,
+            current_stock=8,
+            forecast_percentiles={},
+        ),
+    ]
 
 
 def test_build_point_forecast_article_configs_from_csv(tmp_path):
@@ -99,6 +133,53 @@ def test_build_point_forecast_article_configs_requires_contiguous_periods():
             initial_on_hand=5,
             service_level_factor=0.9,
         )
+
+
+def test_build_point_forecast_article_configs_defaults_method_only_for_none():
+    rows = [
+        PointForecastRow("A", 0, 10, 12, 11),
+        PointForecastRow("A", 1, 9, 11, 10),
+    ]
+
+    configs = build_point_forecast_article_configs(
+        rows,
+        lead_time=1,
+        initial_on_hand=5,
+        service_level_factor=0.9,
+        safety_stock_method=None,
+    )
+
+    assert configs["A"].policy.safety_stock_method == "sqrt_horizon"
+
+
+def test_build_point_forecast_article_configs_rejects_empty_method():
+    rows = [
+        PointForecastRow("A", 0, 10, 12, 11),
+        PointForecastRow("A", 1, 9, 11, 10),
+    ]
+
+    with pytest.raises(ValueError, match="safety_stock_method must be one of"):
+        build_point_forecast_article_configs(
+            rows,
+            lead_time=1,
+            initial_on_hand=5,
+            service_level_factor=0.9,
+            safety_stock_method="",
+        )
+
+
+@pytest.mark.parametrize(
+    "builder",
+    [
+        build_point_forecast_article_configs_from_standard_rows,
+        build_lead_time_forecast_article_configs_from_standard_rows,
+    ],
+)
+def test_build_standard_configs_reject_empty_safety_stock_method(builder):
+    rows = _standard_rows_for_method_validation()
+
+    with pytest.raises(ValueError, match="safety_stock_method must be one of"):
+        builder(rows, service_level_factor=0.9, safety_stock_method="")
 
 
 def test_iter_standard_simulation_rows_from_csv(tmp_path):

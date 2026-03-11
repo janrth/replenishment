@@ -1153,7 +1153,11 @@ def build_point_forecast_article_configs(
                     service_level_factor, unique_id, "service_level_factor"
                 ),
                 service_level_mode=mode_value if mode_value is not None else "factor",
-                safety_stock_method=safety_method_value or "sqrt_horizon",
+                safety_stock_method=(
+                    safety_method_value
+                    if safety_method_value is not None
+                    else "sqrt_horizon"
+                ),
             )
         elif policy_mode == "base_stock":
             policy = PointForecastOptimizationPolicy(
@@ -1173,7 +1177,11 @@ def build_point_forecast_article_configs(
                     service_level_factor, unique_id, "service_level_factor"
                 ),
                 service_level_mode=mode_value if mode_value is not None else "factor",
-                safety_stock_method=safety_method_value or "sqrt_horizon",
+                safety_stock_method=(
+                    safety_method_value
+                    if safety_method_value is not None
+                    else "sqrt_horizon"
+                ),
             )
         else:
             raise ValueError("policy_mode must be 'base_stock' or 'rop'.")
@@ -1346,7 +1354,11 @@ def build_point_forecast_article_configs_from_standard_rows(
                     service_level_factor, unique_id, "service_level_factor"
                 ),
                 service_level_mode=mode_value if mode_value is not None else "factor",
-                safety_stock_method=safety_method_value or "sqrt_horizon",
+                safety_stock_method=(
+                    safety_method_value
+                    if safety_method_value is not None
+                    else "sqrt_horizon"
+                ),
                 fixed_rmse=_resolve_optional_value(
                     fixed_rmse, unique_id, "fixed_rmse"
                 ),
@@ -1369,7 +1381,11 @@ def build_point_forecast_article_configs_from_standard_rows(
                     service_level_factor, unique_id, "service_level_factor"
                 ),
                 service_level_mode=mode_value if mode_value is not None else "factor",
-                safety_stock_method=safety_method_value or "sqrt_horizon",
+                safety_stock_method=(
+                    safety_method_value
+                    if safety_method_value is not None
+                    else "sqrt_horizon"
+                ),
                 fixed_rmse=_resolve_optional_value(
                     fixed_rmse, unique_id, "fixed_rmse"
                 ),
@@ -1458,7 +1474,11 @@ def build_lead_time_forecast_article_configs_from_standard_rows(
                 service_level_factor, unique_id, "service_level_factor"
             ),
             service_level_mode=mode_value if mode_value is not None else "factor",
-            safety_stock_method=safety_method_value or "sqrt_horizon",
+            safety_stock_method=(
+                safety_method_value
+                if safety_method_value is not None
+                else "sqrt_horizon"
+            ),
             fixed_rmse=_resolve_optional_value(
                 fixed_rmse, unique_id, "fixed_rmse"
             ),
