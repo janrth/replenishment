@@ -185,6 +185,7 @@ plot_replenishment_decisions(
 For full runnable walkthroughs (including additional variants):
 
 - `notebooks/mean_forecast_safety_stock_example.ipynb`
+- `notebooks/k_rmse_safety_stock_optimization_example.ipynb`
 - `notebooks/percentile_optimization_example.ipynb`
 - `notebooks/generated_data_example.ipynb`
 

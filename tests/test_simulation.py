@@ -18,6 +18,8 @@ from replenishment import (
     simulate_replenishment_with_aggregation,
     optimize_aggregation_windows,
     optimize_forecast_targets,
+    optimize_k_rmse_factors,
+    optimize_k_rmse_factors_for_fill_rate,
     optimize_service_level_factors,
     percentile_forecast_optimisation,
     point_forecast_optimisation,
@@ -790,3 +792,120 @@ def test_optimize_aggregation_and_forecast_targets_handles_generator_series():
     )
 
     assert results["A"].target in {"p50", "p90"}
+
+
+def test_point_forecast_policy_k_rmse_uses_unscaled_rmse():
+    policy = PointForecastOptimizationPolicy(
+        forecast=[10, 10, 10, 10, 10, 10],
+        actuals=[10, 10, 10, 10, 10, 10],
+        lead_time=2,
+        forecast_horizon=3,
+        service_level_factor=2.0,
+        safety_stock_method="k_rmse",
+        fixed_rmse=3.0,
+    )
+    state_period2 = InventoryState(period=2, on_hand=0, on_order=0, backorders=0)
+
+    # forecast qty = 30, safety stock = 2 * 3 = 6
+    assert policy.order_quantity_for(state_period2) == 36
+
+
+def test_optimize_k_rmse_factors_selects_lowest_cost():
+    forecast = [10, 10, 10, 10, 10]
+    actuals = [8, 12, 9, 11, 10]
+    candidates = [0.0, 1.0, 2.0]
+    base_policy = PointForecastOptimizationPolicy(
+        forecast=forecast,
+        actuals=actuals,
+        lead_time=1,
+        service_level_factor=0.0,
+    )
+    config = ArticleSimulationConfig(
+        periods=4,
+        demand=actuals[:4],
+        initial_on_hand=4,
+        lead_time=1,
+        policy=base_policy,
+        holding_cost_per_unit=2.0,
+        stockout_cost_per_unit=2.0,
+    )
+
+    result = optimize_k_rmse_factors({"A": config}, candidates)["A"]
+
+    candidate_costs = {}
+    for k in candidates:
+        policy = PointForecastOptimizationPolicy(
+            forecast=forecast,
+            actuals=actuals,
+            lead_time=1,
+            service_level_factor=k,
+            safety_stock_method="k_rmse",
+        )
+        simulation = simulate_replenishment(
+            periods=config.periods,
+            demand=config.demand,
+            initial_on_hand=config.initial_on_hand,
+            lead_time=config.lead_time,
+            policy=policy,
+            holding_cost_per_unit=config.holding_cost_per_unit,
+            stockout_cost_per_unit=config.stockout_cost_per_unit,
+        )
+        candidate_costs[k] = simulation.summary.total_cost
+
+    expected_k = min(candidate_costs, key=candidate_costs.get)
+    assert result.service_level_factor == expected_k
+    assert result.simulation.metadata is not None
+    assert result.simulation.metadata.safety_stock_method == "k_rmse"
+
+
+def test_optimize_k_rmse_factors_for_fill_rate_targets_with_cost_tiebreak():
+    forecast = [10, 10, 10, 10, 10, 10]
+    actuals = [10, 12, 9, 11, 13, 8]
+    candidates = [0.0, 1.0, 2.0, 3.0]
+    base_policy = PointForecastOptimizationPolicy(
+        forecast=forecast,
+        actuals=actuals,
+        lead_time=1,
+        service_level_factor=0.0,
+    )
+    config = ArticleSimulationConfig(
+        periods=6,
+        demand=actuals,
+        initial_on_hand=2,
+        lead_time=1,
+        policy=base_policy,
+        holding_cost_per_unit=1.0,
+        stockout_cost_per_unit=10.0,
+    )
+    target_fill_rate = 0.84
+
+    result = optimize_k_rmse_factors_for_fill_rate(
+        {"A": config},
+        candidates,
+        target_fill_rate=target_fill_rate,
+    )["A"]
+
+    eligible: dict[float, float] = {}
+    for k in candidates:
+        policy = PointForecastOptimizationPolicy(
+            forecast=forecast,
+            actuals=actuals,
+            lead_time=1,
+            service_level_factor=k,
+            safety_stock_method="k_rmse",
+        )
+        simulation = simulate_replenishment(
+            periods=config.periods,
+            demand=config.demand,
+            initial_on_hand=config.initial_on_hand,
+            lead_time=config.lead_time,
+            policy=policy,
+            holding_cost_per_unit=config.holding_cost_per_unit,
+            stockout_cost_per_unit=config.stockout_cost_per_unit,
+        )
+        if simulation.summary.fill_rate >= target_fill_rate:
+            eligible[k] = simulation.summary.total_cost
+
+    assert result.meets_fill_rate_target
+    assert result.achieved_fill_rate >= target_fill_rate
+    assert result.k == min(eligible, key=eligible.get)

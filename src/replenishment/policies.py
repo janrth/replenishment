@@ -14,6 +14,33 @@ from .service_levels import (
     service_level_multiplier,
 )
 
+SAFETY_STOCK_METHOD_SQRT_HORIZON = "sqrt_horizon"
+SAFETY_STOCK_METHOD_K_RMSE = "k_rmse"
+
+_SAFETY_STOCK_METHOD_ALIASES = {
+    SAFETY_STOCK_METHOD_SQRT_HORIZON: SAFETY_STOCK_METHOD_SQRT_HORIZON,
+    "legacy": SAFETY_STOCK_METHOD_SQRT_HORIZON,
+    "legacy_scaled": SAFETY_STOCK_METHOD_SQRT_HORIZON,
+    "scaled_rmse": SAFETY_STOCK_METHOD_SQRT_HORIZON,
+    "horizon_scaled": SAFETY_STOCK_METHOD_SQRT_HORIZON,
+    SAFETY_STOCK_METHOD_K_RMSE: SAFETY_STOCK_METHOD_K_RMSE,
+    "raw_rmse": SAFETY_STOCK_METHOD_K_RMSE,
+    "raw": SAFETY_STOCK_METHOD_K_RMSE,
+    "k*rmse": SAFETY_STOCK_METHOD_K_RMSE,
+}
+
+
+def normalize_safety_stock_method(method: str | None) -> str:
+    if method is None:
+        return SAFETY_STOCK_METHOD_SQRT_HORIZON
+    normalized = method.strip().lower()
+    if normalized in _SAFETY_STOCK_METHOD_ALIASES:
+        return _SAFETY_STOCK_METHOD_ALIASES[normalized]
+    raise ValueError(
+        "safety_stock_method must be one of: "
+        f"{', '.join(sorted(_SAFETY_STOCK_METHOD_ALIASES))}."
+    )
+
 
 def _normalize_series(series: Iterable[int] | DemandModel) -> DemandModel:
     if callable(series):
@@ -135,6 +162,7 @@ class ForecastBasedPolicy:
     rmse_window: int | None = None
     service_level_factor: float = 1.0
     service_level_mode: str = "factor"
+    safety_stock_method: str = SAFETY_STOCK_METHOD_SQRT_HORIZON
     fixed_rmse: float | None = None
     demand_buffer_strength: float = 0.0
     demand_buffer_reference: float | None = None
@@ -145,6 +173,7 @@ class ForecastBasedPolicy:
     _actual_values: list[int] | None = field(init=False, repr=False)
     _service_level_multiplier: float = field(init=False, repr=False)
     _service_level_mode_normalized: str = field(init=False, repr=False)
+    _safety_stock_method_normalized: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.lead_time < 0:
@@ -192,6 +221,11 @@ class ForecastBasedPolicy:
             raise ValueError("Demand buffer max multiplier must be at least 1.")
         normalized_mode = normalize_service_level_mode(self.service_level_mode)
         object.__setattr__(self, "_service_level_mode_normalized", normalized_mode)
+        object.__setattr__(
+            self,
+            "_safety_stock_method_normalized",
+            normalize_safety_stock_method(self.safety_stock_method),
+        )
         if normalized_mode == "fill_rate":
             object.__setattr__(self, "_service_level_multiplier", 0.0)
         else:
@@ -292,7 +326,10 @@ class ForecastBasedPolicy:
             )
         else:
             forecast_qty = self._forecast_sum_for(start_period, total_horizon)
-            safety_stock = self._service_level_multiplier * rmse * lead_time_factor
+            if self._safety_stock_method_normalized == SAFETY_STOCK_METHOD_K_RMSE:
+                safety_stock = self._service_level_multiplier * rmse
+            else:
+                safety_stock = self._service_level_multiplier * rmse * lead_time_factor
         demand_multiplier = 1.0
         if self._service_level_mode_normalized != "fill_rate":
             buffer_reference = _resolve_buffer_reference(
@@ -411,6 +448,7 @@ class PointForecastOptimizationPolicy:
     rmse_window: int | None = None
     service_level_factor: float = 1.0
     service_level_mode: str = "factor"
+    safety_stock_method: str = SAFETY_STOCK_METHOD_SQRT_HORIZON
     fixed_rmse: float | None = None
     demand_buffer_strength: float = 0.0
     demand_buffer_reference: float | None = None
@@ -421,6 +459,7 @@ class PointForecastOptimizationPolicy:
     _actual_values: list[int] | None = field(init=False, repr=False)
     _service_level_multiplier: float = field(init=False, repr=False)
     _service_level_mode_normalized: str = field(init=False, repr=False)
+    _safety_stock_method_normalized: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.lead_time < 0:
@@ -468,6 +507,11 @@ class PointForecastOptimizationPolicy:
             raise ValueError("Demand buffer max multiplier must be at least 1.")
         normalized_mode = normalize_service_level_mode(self.service_level_mode)
         object.__setattr__(self, "_service_level_mode_normalized", normalized_mode)
+        object.__setattr__(
+            self,
+            "_safety_stock_method_normalized",
+            normalize_safety_stock_method(self.safety_stock_method),
+        )
         if normalized_mode == "fill_rate":
             object.__setattr__(self, "_service_level_multiplier", 0.0)
         else:
@@ -575,7 +619,10 @@ class PointForecastOptimizationPolicy:
                 horizon=protection_horizon,
             )
         else:
-            safety_stock = self._service_level_multiplier * rmse * lead_time_factor
+            if self._safety_stock_method_normalized == SAFETY_STOCK_METHOD_K_RMSE:
+                safety_stock = self._service_level_multiplier * rmse
+            else:
+                safety_stock = self._service_level_multiplier * rmse * lead_time_factor
         if self._service_level_mode_normalized != "fill_rate":
             buffer_reference = _resolve_buffer_reference(
                 self.demand_buffer_reference,
@@ -606,6 +653,7 @@ class RopPointForecastOptimizationPolicy:
     rmse_window: int | None = None
     service_level_factor: float = 1.0
     service_level_mode: str = "factor"
+    safety_stock_method: str = SAFETY_STOCK_METHOD_SQRT_HORIZON
     fixed_rmse: float | None = None
     demand_buffer_strength: float = 0.0
     demand_buffer_reference: float | None = None
@@ -616,6 +664,7 @@ class RopPointForecastOptimizationPolicy:
     _actual_values: list[int] | None = field(init=False, repr=False)
     _service_level_multiplier: float = field(init=False, repr=False)
     _service_level_mode_normalized: str = field(init=False, repr=False)
+    _safety_stock_method_normalized: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.lead_time < 0:
@@ -663,6 +712,11 @@ class RopPointForecastOptimizationPolicy:
             raise ValueError("Demand buffer max multiplier must be at least 1.")
         normalized_mode = normalize_service_level_mode(self.service_level_mode)
         object.__setattr__(self, "_service_level_mode_normalized", normalized_mode)
+        object.__setattr__(
+            self,
+            "_safety_stock_method_normalized",
+            normalize_safety_stock_method(self.safety_stock_method),
+        )
         if normalized_mode == "fill_rate":
             object.__setattr__(self, "_service_level_multiplier", 0.0)
         else:
@@ -769,7 +823,10 @@ class RopPointForecastOptimizationPolicy:
                 horizon=lead_horizon,
             )
         else:
-            safety_stock = self._service_level_multiplier * rmse * lead_time_factor
+            if self._safety_stock_method_normalized == SAFETY_STOCK_METHOD_K_RMSE:
+                safety_stock = self._service_level_multiplier * rmse
+            else:
+                safety_stock = self._service_level_multiplier * rmse * lead_time_factor
         if self._service_level_mode_normalized != "fill_rate":
             buffer_reference = _resolve_buffer_reference(
                 self.demand_buffer_reference,
@@ -803,6 +860,7 @@ class LeadTimeForecastOptimizationPolicy:
     rmse_window: int | None = None
     service_level_factor: float = 1.0
     service_level_mode: str = "factor"
+    safety_stock_method: str = SAFETY_STOCK_METHOD_SQRT_HORIZON
     fixed_rmse: float | None = None
     demand_buffer_strength: float = 0.0
     demand_buffer_reference: float | None = None
@@ -813,6 +871,7 @@ class LeadTimeForecastOptimizationPolicy:
     _actual_values: list[int] | None = field(init=False, repr=False)
     _service_level_multiplier: float = field(init=False, repr=False)
     _service_level_mode_normalized: str = field(init=False, repr=False)
+    _safety_stock_method_normalized: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.lead_time < 0:
@@ -860,6 +919,11 @@ class LeadTimeForecastOptimizationPolicy:
             raise ValueError("Demand buffer max multiplier must be at least 1.")
         normalized_mode = normalize_service_level_mode(self.service_level_mode)
         object.__setattr__(self, "_service_level_mode_normalized", normalized_mode)
+        object.__setattr__(
+            self,
+            "_safety_stock_method_normalized",
+            normalize_safety_stock_method(self.safety_stock_method),
+        )
         if normalized_mode == "fill_rate":
             object.__setattr__(self, "_service_level_multiplier", 0.0)
         else:
@@ -964,7 +1028,10 @@ class LeadTimeForecastOptimizationPolicy:
                 horizon=protection_horizon,
             )
         else:
-            safety_stock = self._service_level_multiplier * rmse * lead_time_factor
+            if self._safety_stock_method_normalized == SAFETY_STOCK_METHOD_K_RMSE:
+                safety_stock = self._service_level_multiplier * rmse
+            else:
+                safety_stock = self._service_level_multiplier * rmse * lead_time_factor
         if self._service_level_mode_normalized != "fill_rate":
             buffer_reference = _resolve_buffer_reference(
                 self.demand_buffer_reference,

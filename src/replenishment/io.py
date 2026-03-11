@@ -1094,6 +1094,7 @@ def build_point_forecast_article_configs(
     initial_on_hand: Mapping[str, int] | int,
     service_level_factor: Mapping[str, float] | float,
     service_level_mode: Mapping[str, str] | str | None = None,
+    safety_stock_method: Mapping[str, str] | str | None = None,
     review_period: Mapping[str, int] | int | None = None,
     forecast_horizon: Mapping[str, int] | int | None = None,
     rmse_window: Mapping[str, int] | int | None = None,
@@ -1127,6 +1128,13 @@ def build_point_forecast_article_configs(
             raise TypeError(
                 "service_level_mode must be a string or mapping of strings."
             )
+        safety_method_value = _resolve_optional_value(
+            safety_stock_method, unique_id, "safety_stock_method"
+        )
+        if safety_method_value is not None and not isinstance(safety_method_value, str):
+            raise TypeError(
+                "safety_stock_method must be a string or mapping of strings."
+            )
         if policy_mode == "rop":
             policy = RopPointForecastOptimizationPolicy(
                 forecast=forecast,
@@ -1145,6 +1153,11 @@ def build_point_forecast_article_configs(
                     service_level_factor, unique_id, "service_level_factor"
                 ),
                 service_level_mode=mode_value if mode_value is not None else "factor",
+                safety_stock_method=(
+                    safety_method_value
+                    if safety_method_value is not None
+                    else "sqrt_horizon"
+                ),
             )
         elif policy_mode == "base_stock":
             policy = PointForecastOptimizationPolicy(
@@ -1164,6 +1177,11 @@ def build_point_forecast_article_configs(
                     service_level_factor, unique_id, "service_level_factor"
                 ),
                 service_level_mode=mode_value if mode_value is not None else "factor",
+                safety_stock_method=(
+                    safety_method_value
+                    if safety_method_value is not None
+                    else "sqrt_horizon"
+                ),
             )
         else:
             raise ValueError("policy_mode must be 'base_stock' or 'rop'.")
@@ -1270,6 +1288,7 @@ def build_point_forecast_article_configs_from_standard_rows(
     *,
     service_level_factor: Mapping[str, float] | float,
     service_level_mode: Mapping[str, str] | str | None = None,
+    safety_stock_method: Mapping[str, str] | str | None = None,
     fixed_rmse: Mapping[str, float] | float | None = None,
     review_period: Mapping[str, int] | int | None = None,
     forecast_horizon: Mapping[str, int] | int | None = None,
@@ -1310,6 +1329,13 @@ def build_point_forecast_article_configs_from_standard_rows(
             raise TypeError(
                 "service_level_mode must be a string or mapping of strings."
             )
+        safety_method_value = _resolve_optional_value(
+            safety_stock_method, unique_id, "safety_stock_method"
+        )
+        if safety_method_value is not None and not isinstance(safety_method_value, str):
+            raise TypeError(
+                "safety_stock_method must be a string or mapping of strings."
+            )
         if policy_mode == "rop":
             policy = RopPointForecastOptimizationPolicy(
                 forecast=forecast,
@@ -1328,6 +1354,11 @@ def build_point_forecast_article_configs_from_standard_rows(
                     service_level_factor, unique_id, "service_level_factor"
                 ),
                 service_level_mode=mode_value if mode_value is not None else "factor",
+                safety_stock_method=(
+                    safety_method_value
+                    if safety_method_value is not None
+                    else "sqrt_horizon"
+                ),
                 fixed_rmse=_resolve_optional_value(
                     fixed_rmse, unique_id, "fixed_rmse"
                 ),
@@ -1350,6 +1381,11 @@ def build_point_forecast_article_configs_from_standard_rows(
                     service_level_factor, unique_id, "service_level_factor"
                 ),
                 service_level_mode=mode_value if mode_value is not None else "factor",
+                safety_stock_method=(
+                    safety_method_value
+                    if safety_method_value is not None
+                    else "sqrt_horizon"
+                ),
                 fixed_rmse=_resolve_optional_value(
                     fixed_rmse, unique_id, "fixed_rmse"
                 ),
@@ -1374,6 +1410,7 @@ def build_lead_time_forecast_article_configs_from_standard_rows(
     *,
     service_level_factor: Mapping[str, float] | float,
     service_level_mode: Mapping[str, str] | str | None = None,
+    safety_stock_method: Mapping[str, str] | str | None = None,
     fixed_rmse: Mapping[str, float] | float | None = None,
     review_period: Mapping[str, int] | int | None = None,
     forecast_horizon: Mapping[str, int] | int | None = None,
@@ -1413,6 +1450,13 @@ def build_lead_time_forecast_article_configs_from_standard_rows(
             raise TypeError(
                 "service_level_mode must be a string or mapping of strings."
             )
+        safety_method_value = _resolve_optional_value(
+            safety_stock_method, unique_id, "safety_stock_method"
+        )
+        if safety_method_value is not None and not isinstance(safety_method_value, str):
+            raise TypeError(
+                "safety_stock_method must be a string or mapping of strings."
+            )
         policy = LeadTimeForecastOptimizationPolicy(
             forecast=forecast,
             actuals=actuals,
@@ -1430,6 +1474,11 @@ def build_lead_time_forecast_article_configs_from_standard_rows(
                 service_level_factor, unique_id, "service_level_factor"
             ),
             service_level_mode=mode_value if mode_value is not None else "factor",
+            safety_stock_method=(
+                safety_method_value
+                if safety_method_value is not None
+                else "sqrt_horizon"
+            ),
             fixed_rmse=_resolve_optional_value(
                 fixed_rmse, unique_id, "fixed_rmse"
             ),
@@ -1454,6 +1503,7 @@ def optimize_point_forecast_policy_and_simulate_actuals(
     *,
     use_current_stock: bool | None = None,
     service_level_mode: str | None = None,
+    safety_stock_method: str | None = None,
 ) -> tuple[
     dict[str, PointForecastOptimizationResult],
     dict[str, SimulationResult],
@@ -1463,11 +1513,13 @@ def optimize_point_forecast_policy_and_simulate_actuals(
     backtest_configs = build_point_forecast_article_configs_from_standard_rows(
         backtest_rows,
         service_level_factor=1.0,
+        safety_stock_method=safety_stock_method,
     )
     optimized = optimize_service_level_factors(
         backtest_configs,
         candidate_factors=candidate_factors,
         service_level_mode=service_level_mode,
+        safety_stock_method=safety_stock_method,
     )
     backtest_actuals = _actuals_by_article(backtest_rows)
     eval_factors = {
@@ -1478,6 +1530,7 @@ def optimize_point_forecast_policy_and_simulate_actuals(
         evaluation_rows,
         service_level_factor=eval_factors,
         service_level_mode=service_level_mode,
+        safety_stock_method=safety_stock_method,
         use_current_stock=use_current_stock,
         actuals_override=backtest_actuals,
     )
