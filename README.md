@@ -17,8 +17,6 @@ It is designed for teams that want to:
 
 The project is tested on Python `3.10`, `3.11`, `3.12`, and `3.13`.
 
-Yes, Python `3.13` is out and stable. `Python 3.13.0` was officially released on October 7, 2024.
-
 ## Installation
 
 ### Install from PyPI
