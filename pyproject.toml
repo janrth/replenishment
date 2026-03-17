@@ -3,16 +3,17 @@ name = "replenishment"
 dynamic = ["version"]
 description = "Stock replenishment simulation library."
 readme = "README.md"
-requires-python = ">=3.9"
+license = "MIT"
+requires-python = ">=3.10"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
     "ipykernel>=6.31.0",
@@ -30,6 +31,7 @@ dev = ["pytest>=7.0"]
 Homepage = "https://github.com/janrth/replenishment"
 Repository = "https://github.com/janrth/replenishment"
 Issues = "https://github.com/janrth/replenishment/issues"
+Changelog = "https://github.com/janrth/replenishment/blob/main/CHANGELOG.md"
 
 [build-system]
 requires = ["setuptools>=69", "setuptools-scm[toml]>=8"]
