@@ -810,6 +810,22 @@ def test_point_forecast_policy_k_rmse_uses_unscaled_rmse():
     assert policy.order_quantity_for(state_period2) == 36
 
 
+def test_point_forecast_policy_k_mae_uses_unscaled_mae():
+    policy = PointForecastOptimizationPolicy(
+        forecast=[10, 10, 10, 10, 10, 10],
+        actuals=[8, 13, 9, 12, 10, 10],
+        lead_time=2,
+        forecast_horizon=3,
+        service_level_factor=2.0,
+        safety_stock_method="k_mae",
+    )
+    state_period3 = InventoryState(period=3, on_hand=0, on_order=0, backorders=0)
+
+    # periods [0,1,2] abs errors -> [2,3,1], mae = 2
+    # forecast qty = 30, safety stock = 2 * 2 = 4
+    assert policy.order_quantity_for(state_period3) == 34
+
+
 def test_optimize_k_rmse_factors_selects_lowest_cost():
     forecast = [10, 10, 10, 10, 10]
     actuals = [8, 12, 9, 11, 10]

@@ -16,6 +16,7 @@ from .service_levels import (
 
 SAFETY_STOCK_METHOD_SQRT_HORIZON = "sqrt_horizon"
 SAFETY_STOCK_METHOD_K_RMSE = "k_rmse"
+SAFETY_STOCK_METHOD_K_MAE = "k_mae"
 
 _SAFETY_STOCK_METHOD_ALIASES = {
     SAFETY_STOCK_METHOD_SQRT_HORIZON: SAFETY_STOCK_METHOD_SQRT_HORIZON,
@@ -27,6 +28,9 @@ _SAFETY_STOCK_METHOD_ALIASES = {
     "raw_rmse": SAFETY_STOCK_METHOD_K_RMSE,
     "raw": SAFETY_STOCK_METHOD_K_RMSE,
     "k*rmse": SAFETY_STOCK_METHOD_K_RMSE,
+    SAFETY_STOCK_METHOD_K_MAE: SAFETY_STOCK_METHOD_K_MAE,
+    "raw_mae": SAFETY_STOCK_METHOD_K_MAE,
+    "k*mae": SAFETY_STOCK_METHOD_K_MAE,
 }
 
 
@@ -92,6 +96,16 @@ def _rmse_from_series(actuals: list[int], forecasts: list[int]) -> float:
         return abs(errors[0])
     mean_squared_error = statistics.fmean(error**2 for error in errors)
     return math.sqrt(mean_squared_error)
+
+
+def _mae_from_series(actuals: list[int], forecasts: list[int]) -> float:
+    count = min(len(actuals), len(forecasts))
+    if count <= 0:
+        return 0.0
+    errors = [abs(actuals[index] - forecasts[index]) for index in range(count)]
+    if not errors:
+        return 0.0
+    return statistics.fmean(errors)
 
 
 def _safety_stock_from_fill_rate(
@@ -282,7 +296,7 @@ class ForecastBasedPolicy:
         if max_index <= 0:
             return 0.0
         if self.fixed_rmse is not None:
-            rmse = self.fixed_rmse
+            error_value = self.fixed_rmse
         else:
             forecast_series: list[int] = []
             actuals_series: list[int] = []
@@ -305,7 +319,10 @@ class ForecastBasedPolicy:
                 actuals_series = _aggregate_series(
                     actuals_series, self.rmse_window, extend_last=False
                 )
-            rmse = _rmse_from_series(actuals_series, forecast_series)
+            if self._safety_stock_method_normalized == SAFETY_STOCK_METHOD_K_MAE:
+                error_value = _mae_from_series(actuals_series, forecast_series)
+            else:
+                error_value = _rmse_from_series(actuals_series, forecast_series)
         protection_horizon = self.lead_time + (
             self.forecast_horizon if self.forecast_horizon is not None else 1
         )
@@ -321,15 +338,22 @@ class ForecastBasedPolicy:
             safety_stock = _safety_stock_from_fill_rate(
                 fill_rate=self.service_level_factor,
                 forecast_qty=forecast_qty,
-                rmse=rmse,
+                rmse=error_value,
                 horizon=protection_horizon,
             )
         else:
             forecast_qty = self._forecast_sum_for(start_period, total_horizon)
-            if self._safety_stock_method_normalized == SAFETY_STOCK_METHOD_K_RMSE:
-                safety_stock = self._service_level_multiplier * rmse
+            if self._safety_stock_method_normalized in {
+                SAFETY_STOCK_METHOD_K_RMSE,
+                SAFETY_STOCK_METHOD_K_MAE,
+            }:
+                safety_stock = self._service_level_multiplier * error_value
             else:
-                safety_stock = self._service_level_multiplier * rmse * lead_time_factor
+                safety_stock = (
+                    self._service_level_multiplier
+                    * error_value
+                    * lead_time_factor
+                )
         demand_multiplier = 1.0
         if self._service_level_mode_normalized != "fill_rate":
             buffer_reference = _resolve_buffer_reference(
@@ -557,7 +581,7 @@ class PointForecastOptimizationPolicy:
             for offset in range(horizon)
         )
 
-    def _rmse(self, period: int) -> float:
+    def _forecast_error(self, period: int) -> float:
         if self.fixed_rmse is not None:
             return self.fixed_rmse
         if period <= 0:
@@ -590,6 +614,8 @@ class PointForecastOptimizationPolicy:
             actuals_series = _aggregate_series(
                 actuals_series, self.rmse_window, extend_last=False
             )
+        if self._safety_stock_method_normalized == SAFETY_STOCK_METHOD_K_MAE:
+            return _mae_from_series(actuals_series, forecast_series)
         return _rmse_from_series(actuals_series, forecast_series)
 
     def order_quantity_for(self, state: InventoryState) -> int:
@@ -601,7 +627,7 @@ class PointForecastOptimizationPolicy:
         )
         start_period = state.period + max(1, self.lead_time)
         forecast_qty = self._forecast_sum_for(start_period, total_horizon)
-        rmse = self._rmse(state.period)
+        error_value = self._forecast_error(state.period)
         protection_horizon = self.lead_time + (
             self.forecast_horizon if self.forecast_horizon is not None else 1
         )
@@ -615,14 +641,21 @@ class PointForecastOptimizationPolicy:
             safety_stock = _safety_stock_from_fill_rate(
                 fill_rate=self.service_level_factor,
                 forecast_qty=fill_rate_forecast_qty,
-                rmse=rmse,
+                rmse=error_value,
                 horizon=protection_horizon,
             )
         else:
-            if self._safety_stock_method_normalized == SAFETY_STOCK_METHOD_K_RMSE:
-                safety_stock = self._service_level_multiplier * rmse
+            if self._safety_stock_method_normalized in {
+                SAFETY_STOCK_METHOD_K_RMSE,
+                SAFETY_STOCK_METHOD_K_MAE,
+            }:
+                safety_stock = self._service_level_multiplier * error_value
             else:
-                safety_stock = self._service_level_multiplier * rmse * lead_time_factor
+                safety_stock = (
+                    self._service_level_multiplier
+                    * error_value
+                    * lead_time_factor
+                )
         if self._service_level_mode_normalized != "fill_rate":
             buffer_reference = _resolve_buffer_reference(
                 self.demand_buffer_reference,
@@ -762,7 +795,7 @@ class RopPointForecastOptimizationPolicy:
             for offset in range(horizon)
         )
 
-    def _rmse(self, period: int) -> float:
+    def _forecast_error(self, period: int) -> float:
         if self.fixed_rmse is not None:
             return self.fixed_rmse
         if period <= 0:
@@ -795,6 +828,8 @@ class RopPointForecastOptimizationPolicy:
             actuals_series = _aggregate_series(
                 actuals_series, self.rmse_window, extend_last=False
             )
+        if self._safety_stock_method_normalized == SAFETY_STOCK_METHOD_K_MAE:
+            return _mae_from_series(actuals_series, forecast_series)
         return _rmse_from_series(actuals_series, forecast_series)
 
     def order_quantity_for(self, state: InventoryState) -> int:
@@ -813,20 +848,27 @@ class RopPointForecastOptimizationPolicy:
         cycle_stock = self._forecast_sum_for(
             state.period + 1 + lead_horizon, cycle_horizon
         )
-        rmse = self._rmse(state.period)
+        error_value = self._forecast_error(state.period)
         lead_time_factor = math.sqrt(lead_horizon if lead_horizon > 0 else 1)
         if self._service_level_mode_normalized == "fill_rate":
             safety_stock = _safety_stock_from_fill_rate(
                 fill_rate=self.service_level_factor,
                 forecast_qty=lead_demand,
-                rmse=rmse,
+                rmse=error_value,
                 horizon=lead_horizon,
             )
         else:
-            if self._safety_stock_method_normalized == SAFETY_STOCK_METHOD_K_RMSE:
-                safety_stock = self._service_level_multiplier * rmse
+            if self._safety_stock_method_normalized in {
+                SAFETY_STOCK_METHOD_K_RMSE,
+                SAFETY_STOCK_METHOD_K_MAE,
+            }:
+                safety_stock = self._service_level_multiplier * error_value
             else:
-                safety_stock = self._service_level_multiplier * rmse * lead_time_factor
+                safety_stock = (
+                    self._service_level_multiplier
+                    * error_value
+                    * lead_time_factor
+                )
         if self._service_level_mode_normalized != "fill_rate":
             buffer_reference = _resolve_buffer_reference(
                 self.demand_buffer_reference,
@@ -969,7 +1011,7 @@ class LeadTimeForecastOptimizationPolicy:
             for offset in range(horizon)
         )
 
-    def _rmse(self, period: int) -> float:
+    def _forecast_error(self, period: int) -> float:
         if self.fixed_rmse is not None:
             return self.fixed_rmse
         if period <= 0:
@@ -1002,6 +1044,8 @@ class LeadTimeForecastOptimizationPolicy:
             actuals_series = _aggregate_series(
                 actuals_series, self.rmse_window, extend_last=False
             )
+        if self._safety_stock_method_normalized == SAFETY_STOCK_METHOD_K_MAE:
+            return _mae_from_series(actuals_series, forecast_series)
         return _rmse_from_series(actuals_series, forecast_series)
 
     def order_quantity_for(self, state: InventoryState) -> int:
@@ -1013,7 +1057,7 @@ class LeadTimeForecastOptimizationPolicy:
         )
         start_period = state.period + max(1, self.lead_time)
         forecast_qty = self._forecast_sum_for(start_period, total_horizon)
-        rmse = self._rmse(state.period)
+        error_value = self._forecast_error(state.period)
         protection_horizon = self.lead_time + (
             self.forecast_horizon if self.forecast_horizon is not None else 1
         )
@@ -1024,14 +1068,21 @@ class LeadTimeForecastOptimizationPolicy:
             safety_stock = _safety_stock_from_fill_rate(
                 fill_rate=self.service_level_factor,
                 forecast_qty=forecast_qty,
-                rmse=rmse,
+                rmse=error_value,
                 horizon=protection_horizon,
             )
         else:
-            if self._safety_stock_method_normalized == SAFETY_STOCK_METHOD_K_RMSE:
-                safety_stock = self._service_level_multiplier * rmse
+            if self._safety_stock_method_normalized in {
+                SAFETY_STOCK_METHOD_K_RMSE,
+                SAFETY_STOCK_METHOD_K_MAE,
+            }:
+                safety_stock = self._service_level_multiplier * error_value
             else:
-                safety_stock = self._service_level_multiplier * rmse * lead_time_factor
+                safety_stock = (
+                    self._service_level_multiplier
+                    * error_value
+                    * lead_time_factor
+                )
         if self._service_level_mode_normalized != "fill_rate":
             buffer_reference = _resolve_buffer_reference(
                 self.demand_buffer_reference,
