@@ -9,7 +9,7 @@
 It is designed for teams that want to:
 
 - simulate replenishment policies against historical or synthetic demand
-- optimize mean-forecast safety stock, `k*RMSE`, and percentile-target policies
+- optimize mean-forecast safety stock, `k*RMSE`/`k*MAE`, and percentile-target policies
 - compare policies visually on replenishment time series
 - move cleanly between CSV/DataFrame inputs and simulation configs
 
@@ -104,9 +104,9 @@ the resulting replenishment decisions on the forecast horizon.
 
 ![Mean forecast + safety stock example](docs/plots/mean_forecast_safety_stock.png)
 
-### `k*RMSE` + Forecast-Level Buffering
+### `k*RMSE`/`k*MAE` + Forecast-Level Buffering
 
-Use `k*RMSE` for the base safety stock and optionally increase it when lead-time
+Use `k*RMSE` (or `k*MAE`) for the base safety stock and optionally increase it when lead-time
 forecast quantities rise above a baseline. The README plot below uses three
 articles with progressively steeper ramps so the extra safety stock is visible
 directly on the replenishment timeline.
@@ -125,7 +125,7 @@ visualize the chosen forecast target on the evaluation horizon.
 Runnable walkthroughs live in [`notebooks/`](notebooks):
 
 - [`notebooks/mean_forecast_safety_stock_example.ipynb`](notebooks/mean_forecast_safety_stock_example.ipynb): mean forecast safety stock optimization
-- [`notebooks/k_rmse_safety_stock_optimization_example.ipynb`](notebooks/k_rmse_safety_stock_optimization_example.ipynb): `k*RMSE` optimization and forecast-level buffering
+- [`notebooks/k_rmse_safety_stock_optimization_example.ipynb`](notebooks/k_rmse_safety_stock_optimization_example.ipynb): `k*RMSE`/`k*MAE` optimization and forecast-level buffering
 - [`notebooks/percentile_optimization_example.ipynb`](notebooks/percentile_optimization_example.ipynb): percentile-target optimization
 - [`notebooks/mean_forecast_policy_variants_example.ipynb`](notebooks/mean_forecast_policy_variants_example.ipynb): compare policy variants
 - [`notebooks/generated_data_example.ipynb`](notebooks/generated_data_example.ipynb): synthetic data generation
