@@ -296,6 +296,7 @@ class ForecastBasedPolicy:
         if max_index <= 0:
             return 0.0
         if self.fixed_rmse is not None:
+            rmse = self.fixed_rmse
             error_value = self.fixed_rmse
         else:
             forecast_series: list[int] = []
@@ -319,10 +320,11 @@ class ForecastBasedPolicy:
                 actuals_series = _aggregate_series(
                     actuals_series, self.rmse_window, extend_last=False
                 )
+            rmse = _rmse_from_series(actuals_series, forecast_series)
             if self._safety_stock_method_normalized == SAFETY_STOCK_METHOD_K_MAE:
                 error_value = _mae_from_series(actuals_series, forecast_series)
             else:
-                error_value = _rmse_from_series(actuals_series, forecast_series)
+                error_value = rmse
         protection_horizon = self.lead_time + (
             self.forecast_horizon if self.forecast_horizon is not None else 1
         )
@@ -338,7 +340,7 @@ class ForecastBasedPolicy:
             safety_stock = _safety_stock_from_fill_rate(
                 fill_rate=self.service_level_factor,
                 forecast_qty=forecast_qty,
-                rmse=error_value,
+                rmse=rmse,
                 horizon=protection_horizon,
             )
         else:
@@ -581,7 +583,11 @@ class PointForecastOptimizationPolicy:
             for offset in range(horizon)
         )
 
-    def _forecast_error(self, period: int) -> float:
+    def _forecast_error(
+        self, period: int, *, use_mae: bool | None = None
+    ) -> float:
+        if use_mae is None:
+            use_mae = self._safety_stock_method_normalized == SAFETY_STOCK_METHOD_K_MAE
         if self.fixed_rmse is not None:
             return self.fixed_rmse
         if period <= 0:
@@ -614,7 +620,7 @@ class PointForecastOptimizationPolicy:
             actuals_series = _aggregate_series(
                 actuals_series, self.rmse_window, extend_last=False
             )
-        if self._safety_stock_method_normalized == SAFETY_STOCK_METHOD_K_MAE:
+        if use_mae:
             return _mae_from_series(actuals_series, forecast_series)
         return _rmse_from_series(actuals_series, forecast_series)
 
@@ -641,7 +647,7 @@ class PointForecastOptimizationPolicy:
             safety_stock = _safety_stock_from_fill_rate(
                 fill_rate=self.service_level_factor,
                 forecast_qty=fill_rate_forecast_qty,
-                rmse=error_value,
+                rmse=self._forecast_error(state.period, use_mae=False),
                 horizon=protection_horizon,
             )
         else:
@@ -795,7 +801,11 @@ class RopPointForecastOptimizationPolicy:
             for offset in range(horizon)
         )
 
-    def _forecast_error(self, period: int) -> float:
+    def _forecast_error(
+        self, period: int, *, use_mae: bool | None = None
+    ) -> float:
+        if use_mae is None:
+            use_mae = self._safety_stock_method_normalized == SAFETY_STOCK_METHOD_K_MAE
         if self.fixed_rmse is not None:
             return self.fixed_rmse
         if period <= 0:
@@ -828,7 +838,7 @@ class RopPointForecastOptimizationPolicy:
             actuals_series = _aggregate_series(
                 actuals_series, self.rmse_window, extend_last=False
             )
-        if self._safety_stock_method_normalized == SAFETY_STOCK_METHOD_K_MAE:
+        if use_mae:
             return _mae_from_series(actuals_series, forecast_series)
         return _rmse_from_series(actuals_series, forecast_series)
 
@@ -854,7 +864,7 @@ class RopPointForecastOptimizationPolicy:
             safety_stock = _safety_stock_from_fill_rate(
                 fill_rate=self.service_level_factor,
                 forecast_qty=lead_demand,
-                rmse=error_value,
+                rmse=self._forecast_error(state.period, use_mae=False),
                 horizon=lead_horizon,
             )
         else:
@@ -1011,7 +1021,11 @@ class LeadTimeForecastOptimizationPolicy:
             for offset in range(horizon)
         )
 
-    def _forecast_error(self, period: int) -> float:
+    def _forecast_error(
+        self, period: int, *, use_mae: bool | None = None
+    ) -> float:
+        if use_mae is None:
+            use_mae = self._safety_stock_method_normalized == SAFETY_STOCK_METHOD_K_MAE
         if self.fixed_rmse is not None:
             return self.fixed_rmse
         if period <= 0:
@@ -1044,7 +1058,7 @@ class LeadTimeForecastOptimizationPolicy:
             actuals_series = _aggregate_series(
                 actuals_series, self.rmse_window, extend_last=False
             )
-        if self._safety_stock_method_normalized == SAFETY_STOCK_METHOD_K_MAE:
+        if use_mae:
             return _mae_from_series(actuals_series, forecast_series)
         return _rmse_from_series(actuals_series, forecast_series)
 
@@ -1068,7 +1082,7 @@ class LeadTimeForecastOptimizationPolicy:
             safety_stock = _safety_stock_from_fill_rate(
                 fill_rate=self.service_level_factor,
                 forecast_qty=forecast_qty,
-                rmse=error_value,
+                rmse=self._forecast_error(state.period, use_mae=False),
                 horizon=protection_horizon,
             )
         else:
