@@ -168,6 +168,23 @@ def test_build_point_forecast_article_configs_rejects_empty_method():
         )
 
 
+def test_build_point_forecast_article_configs_accepts_k_mae_alias():
+    rows = [
+        PointForecastRow("A", 0, 10, 12, 11),
+        PointForecastRow("A", 1, 9, 11, 10),
+    ]
+
+    configs = build_point_forecast_article_configs(
+        rows,
+        lead_time=1,
+        initial_on_hand=5,
+        service_level_factor=0.9,
+        safety_stock_method="k*mae",
+    )
+
+    assert configs["A"].policy._safety_stock_method_normalized == "k_mae"
+
+
 @pytest.mark.parametrize(
     "builder",
     [
