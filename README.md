@@ -122,7 +122,32 @@ visualize the chosen forecast target on the evaluation horizon.
 
 ## Notebooks
 
+Six solver-free policies support independent item-level decisions and tuning:
+`BaseStockPolicy`, `ConstantOrderPolicy`, `CappedBaseStockPolicy`, `sSPolicy`,
+`ProjectedInventoryLevelPolicy`, and `ProtectionPeriodQuantilePolicy`.
+Use `optimize_policy_candidates` for per-item cost-based candidate search and
+`build_article_configs_from_standard_rows` for existing table inputs. Shared
+budgets/capacities and solver-based planning are outside these APIs.
+See [policy semantics and examples](docs/item_level_policies.md) for receipt
+timing, lost-sales metrics, probabilistic assumptions and future PR boundaries.
+
 Runnable walkthroughs live in [`notebooks/`](notebooks):
+
+All nine new-method examples follow the existing standard-data workflow:
+generate rows/DataFrame, split chronologically, fit each article's policy, inspect
+parameters, simulate, inspect decision rows, and call `plot_replenishment_decisions`
+for example items and aggregate stock/missed-sales views.
+
+- [`structured_neural_policy_example.ipynb`](notebooks/structured_neural_policy_example.ipynb): neural learning targeting missed sales/fill rate, exact service validation and safe JSON deployment
+- [`hdpo_policy_example.ipynb`](notebooks/hdpo_policy_example.ipynb): differentiable inventory-cost training with separate exact integer validation
+- [`risk_sensitive_policy_example.ipynb`](notebooks/risk_sensitive_policy_example.ipynb): mean/CVaR/worst-scenario candidate selection, standard-row evaluation and missed-sales plots
+
+- [`base_stock_policy_example.ipynb`](notebooks/base_stock_policy_example.ipynb): static target, tuning and zero-lead-time verification
+- [`constant_order_policy_example.ipynb`](notebooks/constant_order_policy_example.ipynb): fixed orders, long lead times and integer order rates
+- [`capped_base_stock_policy_example.ipynb`](notebooks/capped_base_stock_policy_example.ipynb): joint target/cap tuning
+- [`s_s_policy_example.ipynb`](notebooks/s_s_policy_example.ipynb): independent `(s,S)` thresholds and fixed ordering costs
+- [`projected_inventory_level_policy_example.ipynb`](notebooks/projected_inventory_level_policy_example.ipynb): exact discrete projection and receipt-timing verification
+- [`protection_period_quantile_policy_example.ipynb`](notebooks/protection_period_quantile_policy_example.ipynb): joint demand paths, dependence and aggregate coverage versus fill rate
 
 - [`notebooks/mean_forecast_safety_stock_example.ipynb`](notebooks/mean_forecast_safety_stock_example.ipynb): mean forecast safety stock optimization
 - [`notebooks/k_rmse_safety_stock_optimization_example.ipynb`](notebooks/k_rmse_safety_stock_optimization_example.ipynb): `k*RMSE`/`k*MAE` optimization and forecast-level buffering
@@ -130,6 +155,11 @@ Runnable walkthroughs live in [`notebooks/`](notebooks):
 - [`notebooks/mean_forecast_policy_variants_example.ipynb`](notebooks/mean_forecast_policy_variants_example.ipynb): compare policy variants
 - [`notebooks/generated_data_example.ipynb`](notebooks/generated_data_example.ipynb): synthetic data generation
 - [`notebooks/stock_replenishment_example.ipynb`](notebooks/stock_replenishment_example.ipynb): table-oriented data loading workflow
+
+Advanced learning is available through `pip install -e ".[advanced]"` (optional
+PyTorch). Risk-based candidate search and saved neural-policy inference work
+without Torch. See [advanced independent-item methods](docs/advanced_item_policies.md)
+for APIs, training/deployment rounding, fixed-cost restrictions and risk assumptions.
 
 ## Development and Contribution
 

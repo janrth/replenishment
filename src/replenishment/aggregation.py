@@ -14,6 +14,17 @@ from .policies import (
     PointForecastOptimizationPolicy,
 )
 from .simulation import DemandModel, OrderingPolicy, SimulationMetadata, SimulationResult
+from .item_policies import _ITEM_POLICY_TYPES, _integer
+
+
+def _check_item_policy_aggregation(policy: OrderingPolicy, window: int) -> None:
+    if isinstance(policy, _ITEM_POLICY_TYPES):
+        _integer("aggregation_window", window, 1)
+        if window != 1:
+            raise ValueError(
+                "Time aggregation is unsupported for item policies; use review_period "
+                "on the policy to change decision cadence without changing demand periods."
+            )
 
 
 def aggregate_periods(periods: int, window: int) -> int:
@@ -67,6 +78,7 @@ def aggregate_policy(
     window: int,
     lead_time: int,
 ) -> OrderingPolicy:
+    _check_item_policy_aggregation(policy, window)
     if isinstance(policy, LeadTimeForecastOptimizationPolicy):
         aggregated_forecast = aggregate_series(
             policy.forecast,
@@ -166,6 +178,8 @@ def simulate_replenishment_with_aggregation(
 ):
     from .simulation import simulate_replenishment
 
+    _check_item_policy_aggregation(policy, aggregation_window)
+
     if hasattr(policy, "aggregation_window"):
         replace_kwargs: dict[str, object] = {"aggregation_window": aggregation_window}
         if hasattr(policy, "review_period"):
@@ -202,12 +216,16 @@ def simulate_replenishment_with_aggregation(
     return SimulationResult(
         snapshots=simulation.snapshots,
         summary=simulation.summary,
-        metadata=SimulationMetadata(
+        metadata=dataclass_replace(
+            simulation.metadata or SimulationMetadata(),
             service_level_factor=service_level_factor,
             service_level_mode=service_level_mode,
             aggregation_window=aggregation_window,
             review_period=getattr(aggregated_policy, "review_period", None),
-            forecast_horizon=getattr(aggregated_policy, "forecast_horizon", None),
+            forecast_horizon=getattr(
+                aggregated_policy, "forecast_horizon",
+                simulation.metadata.forecast_horizon if simulation.metadata else None,
+            ),
             rmse_window=getattr(aggregated_policy, "rmse_window", None),
         ),
     )

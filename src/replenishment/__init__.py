@@ -11,6 +11,12 @@ except ModuleNotFoundError:
         __version__ = "0.0.0"
 
 from .policies import (
+    BaseStockPolicy,
+    ConstantOrderPolicy,
+    CappedBaseStockPolicy,
+    sSPolicy,
+    ProjectedInventoryLevelPolicy,
+    ProtectionPeriodQuantilePolicy,
     EmpiricalMultiplierPolicy,
     ForecastBasedPolicy,
     MeanForecastPolicy,
@@ -27,7 +33,13 @@ from .policies import (
     normalize_safety_stock_method,
 )
 from .aggregation import simulate_replenishment_with_aggregation
+from .risk import (
+    RiskObjective, RiskPolicyOptimizationResult, empirical_cvar,
+    optimize_risk_sensitive_policy_candidates,
+)
 from .optimization import (
+    PolicyOptimizationResult,
+    optimize_policy_candidates,
     AggregationForecastTargetOptimizationResult,
     AggregationServiceLevelOptimizationResult,
     AggregationWindowOptimizationResult,
@@ -56,6 +68,7 @@ from .optimization import (
     point_forecast_optimisation,
 )
 from .io import (
+    build_article_configs_from_standard_rows,
     PercentileForecastRow,
     PointForecastRow,
     StandardSimulationRow,
@@ -99,6 +112,31 @@ except ModuleNotFoundError:
     _HAS_PLOTTING = False
 
 __all__ = [
+    "NeuralPolicyConfig",
+    "NeuralWeights",
+    "StructuredNeuralPolicy",
+    "NeuralTrainingResult",
+    "create_structured_neural_policy",
+    "train_structured_neural_policy",
+    "TensorRollout",
+    "HDPOEpoch",
+    "HDPOTrainingResult",
+    "differentiable_rollout",
+    "tensor_risk_score",
+    "train_hdpo",
+    "RiskObjective",
+    "RiskPolicyOptimizationResult",
+    "empirical_cvar",
+    "optimize_risk_sensitive_policy_candidates",
+    "PolicyOptimizationResult",
+    "optimize_policy_candidates",
+    "build_article_configs_from_standard_rows",
+    "BaseStockPolicy",
+    "ConstantOrderPolicy",
+    "CappedBaseStockPolicy",
+    "sSPolicy",
+    "ProjectedInventoryLevelPolicy",
+    "ProtectionPeriodQuantilePolicy",
     "__version__",
     "DemandModel",
     "InventoryState",
@@ -177,3 +215,21 @@ __all__ = [
 
 if _HAS_PLOTTING:
     __all__.append("plot_replenishment_decisions")
+
+
+def __getattr__(name):
+    # Keep training dependencies out of normal imports and inference workflows.
+    if name in {
+        "NeuralPolicyConfig", "NeuralWeights", "StructuredNeuralPolicy", "NeuralTrainingResult",
+        "create_structured_neural_policy", "train_structured_neural_policy",
+    }:
+        from . import neural
+        value = getattr(neural, name)
+        globals()[name] = value
+        return value
+    if name in {"TensorRollout", "HDPOEpoch", "HDPOTrainingResult", "differentiable_rollout", "tensor_risk_score", "train_hdpo"}:
+        from . import hdpo
+        value = getattr(hdpo, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -8,6 +8,11 @@ import math
 import statistics
 
 from .simulation import DemandModel, InventoryState
+from .item_policies import (
+    BaseStockPolicy, ConstantOrderPolicy, CappedBaseStockPolicy, sSPolicy,
+    ProjectedInventoryLevelPolicy, ProtectionPeriodQuantilePolicy,
+    StructuredNeuralPolicy,
+)
 from .service_levels import (
     fill_rate_z,
     normalize_service_level_mode,
@@ -152,7 +157,7 @@ def _demand_buffer_multiplier(
 
 @dataclass(frozen=True)
 class ReorderPointPolicy:
-    """Order up to a fixed quantity when inventory position falls below a point."""
+    """Order fixed quantity Q when inventory position <= r: an (r,Q) rule."""
 
     reorder_point: int
     order_quantity: int

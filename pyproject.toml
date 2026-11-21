@@ -26,6 +26,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
+advanced = ["torch>=2.6,<3"]
 
 [project.urls]
 Homepage = "https://github.com/janrth/replenishment"

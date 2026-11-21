@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+import math
 from typing import Protocol
 
 
@@ -17,10 +18,23 @@ class OrderingPolicy(Protocol):
 
 @dataclass(frozen=True)
 class InventoryState:
+    """Post-demand, pre-order observation in a lost-sales system.
+
+    ``arrival_schedule`` contains positive outstanding receipts as immutable
+    ``(absolute_period, quantity)`` pairs. It excludes the order being decided.
+    Simulator observations always sum to ``on_order``.
+    """
+
     period: int
     on_hand: int
     on_order: int
     backorders: int
+    arrival_schedule: tuple[tuple[int, int], ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "arrival_schedule", tuple(
+            (period, quantity) for period, quantity in self.arrival_schedule
+        ))
 
     @property
     def inventory_position(self) -> int:
@@ -38,6 +52,11 @@ class InventorySnapshot:
     order_placed: int
     on_order: int
 
+    @property
+    def lost_sales(self) -> int:
+        """Demand lost this period; immediate orders arrive after demand."""
+        return max(0, self.demand - self.starting_on_hand)
+
 
 @dataclass(frozen=True)
 class SimulationSummary:
@@ -51,6 +70,11 @@ class SimulationSummary:
     ordering_cost: float
     total_cost: float
 
+    @property
+    def total_lost_sales(self) -> int:
+        """Unfulfilled demand, historically named ``total_backorders``."""
+        return self.total_backorders
+
 
 @dataclass(frozen=True)
 class SimulationMetadata:
@@ -62,6 +86,9 @@ class SimulationMetadata:
     forecast_horizon: int | None = None
     rmse_window: int | None = None
     percentile_target: float | str | None = None
+    policy_name: str | None = None
+    policy_parameters: tuple[tuple[str, object], ...] = ()
+    policy_family: str | None = None
 
 
 @dataclass(frozen=True)
@@ -110,6 +137,38 @@ def simulate_replenishment(
     order_cost_per_order: float = 0.0,
     order_cost_per_unit: float = 0.0,
 ) -> SimulationResult:
+    """Simulate receipts, demand, then ordering, with unmet demand lost.
+
+    An order placed at t arrives at t+lead_time for positive lead times.
+    At lead time zero it arrives after demand at t. Lost demand is never
+    backlogged, and outstanding stock is excluded from period holding cost.
+    There is no terminal salvage value or post-horizon fulfillment.
+    """
+    # Local import preserves the public custom-policy protocol and avoids a
+    # module cycle: built-in policies consume InventoryState from this module.
+    from .item_policies import (
+        ProjectedInventoryLevelPolicy, ProtectionPeriodQuantilePolicy,
+        _ITEM_POLICY_TYPES, _policy_parameters,
+        _integer,
+        StructuredNeuralPolicy,
+    )
+
+    item_policy = isinstance(policy, _ITEM_POLICY_TYPES)
+    if item_policy:
+        periods = _integer("periods", periods, 1)
+        lead_time = _integer("lead_time", lead_time)
+        initial_on_hand = _integer("initial_on_hand", initial_on_hand)
+        for name, value in (
+            ("holding_cost_per_unit", holding_cost_per_unit),
+            ("stockout_cost_per_unit", stockout_cost_per_unit),
+            ("order_cost_per_order", order_cost_per_order),
+            ("order_cost_per_unit", order_cost_per_unit),
+        ):
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be finite and nonnegative.")
+    if isinstance(policy, (ProjectedInventoryLevelPolicy, ProtectionPeriodQuantilePolicy, StructuredNeuralPolicy)):
+        if policy.lead_time != lead_time:
+            raise ValueError("Policy lead_time must match simulation lead_time.")
     if periods <= 0:
         raise ValueError("Periods must be positive.")
     if lead_time < 0:
@@ -137,7 +196,10 @@ def simulate_replenishment(
     for period in range(periods):
         received = pipeline.pop(0) if lead_time > 0 else 0
         on_hand += received
+        starting_on_hand = on_hand
         period_demand = demand_model(period)
+        if item_policy:
+            period_demand = _integer("demand", period_demand)
         total_demand += period_demand
 
         fulfilled = min(on_hand, period_demand)
@@ -152,6 +214,11 @@ def simulate_replenishment(
             on_hand=on_hand,
             on_order=on_order,
             backorders=0,
+            arrival_schedule=tuple(
+                (period + offset + 1, quantity)
+                for offset, quantity in enumerate(pipeline)
+                if quantity > 0
+            ),
         )
         order_qty = max(0, policy.order_quantity_for(state))
         if order_qty > 0:
@@ -170,7 +237,7 @@ def simulate_replenishment(
         snapshots.append(
             InventorySnapshot(
                 period=period,
-                starting_on_hand=on_hand + fulfilled,
+                starting_on_hand=starting_on_hand,
                 demand=period_demand,
                 received=received,
                 ending_on_hand=on_hand,
@@ -198,7 +265,21 @@ def simulate_replenishment(
         total_cost=total_cost,
     )
 
-    return SimulationResult(snapshots=snapshots, summary=summary)
+    metadata = None
+    if item_policy:
+        metadata = SimulationMetadata(
+            policy_family="independent_item",
+            policy_name=type(policy).__name__,
+            policy_parameters=_policy_parameters(policy),
+            aggregation_window=1,
+            review_period=policy.review_period,
+            forecast_horizon=(
+                policy.protection_period
+                if isinstance(policy, ProtectionPeriodQuantilePolicy)
+                else policy.forecast_horizon if isinstance(policy, StructuredNeuralPolicy) else None
+            ),
+        )
+    return SimulationResult(snapshots=snapshots, summary=summary, metadata=metadata)
 
 
 def simulate_replenishment_for_articles(

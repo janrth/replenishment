@@ -31,6 +31,7 @@ from .service_levels import fill_rate_z, normalize_service_level_mode, service_l
 from .simulation import (
     ArticleSimulationConfig,
     SimulationResult,
+    OrderingPolicy,
     simulate_replenishment_for_articles,
 )
 
@@ -68,6 +69,37 @@ class StandardSimulationRow:
     current_stock: int
     forecast_percentiles: Mapping[str, int]
     is_forecast: bool = False
+
+
+def build_article_configs_from_standard_rows(
+    rows: Iterable[StandardSimulationRow],
+    *,
+    policies: Mapping[str, OrderingPolicy],
+    use_current_stock: bool | None = None,
+) -> dict[str, ArticleSimulationConfig]:
+    """Build single-item configs using caller-supplied policies and row demand.
+
+    By default, an all-forecast item uses ``current_stock``; historical/mixed
+    rows use ``initial_on_hand``. ``actuals`` never silently replaces demand.
+    Split and train upstream before using frozen policies on held-out rows.
+    """
+    configs = {}
+    for unique_id, ds_rows in _group_standard_rows(rows).items():
+        if unique_id not in policies:
+            raise ValueError(f"Missing policy for unique_id '{unique_id}'.")
+        ordered = _order_rows_by_ds(unique_id, ds_rows)
+        use_current = all(row.is_forecast for row in ordered) if use_current_stock is None else use_current_stock
+        stock_field = "current_stock" if use_current else "initial_on_hand"
+        configs[unique_id] = ArticleSimulationConfig(
+            periods=len(ordered), demand=[row.demand for row in ordered],
+            initial_on_hand=_ensure_constant(unique_id, ordered, stock_field),
+            lead_time=_ensure_constant(unique_id, ordered, "lead_time"),
+            policy=policies[unique_id],
+            holding_cost_per_unit=_ensure_constant(unique_id, ordered, "holding_cost_per_unit"),
+            stockout_cost_per_unit=_ensure_constant(unique_id, ordered, "stockout_cost_per_unit"),
+            order_cost_per_order=_ensure_constant(unique_id, ordered, "order_cost_per_order"),
+        )
+    return configs
 
 
 @dataclass(frozen=True)
@@ -335,6 +367,7 @@ def build_replenishment_decisions_from_simulations(
     decisions: list[ReplenishmentDecisionRow] = []
     metadata_lookup = decision_metadata or {}
     for unique_id, simulation in simulations.items():
+        item_policy = simulation.metadata is not None and simulation.metadata.policy_family == "independent_item"
         if unique_id not in grouped:
             raise ValueError(f"Missing standard rows for unique_id '{unique_id}'.")
         ordered = _order_rows_by_ds(unique_id, grouped[unique_id])
@@ -349,6 +382,8 @@ def build_replenishment_decisions_from_simulations(
                 review_value = review_period
             else:
                 raise TypeError("review_period must be an int or mapping of ints.")
+        elif item_policy:
+            review_value = simulation.metadata.review_period
         elif aggregation_window is not None:
             if isinstance(aggregation_window, Mapping):
                 review_value = _resolve_value(
@@ -370,6 +405,11 @@ def build_replenishment_decisions_from_simulations(
         if review_value <= 0:
             raise ValueError("review_period must be positive.")
         window = review_value
+        aggregation_value = 1 if item_policy else window
+        if item_policy and aggregation_window is not None:
+            requested_window = _resolve_value(aggregation_window, unique_id, "aggregation_window")
+            if requested_window != 1:
+                raise ValueError("Item policies use unaggregated periods; set review_period on the policy.")
         rmse_window_value: int | None = None
         if rmse_window is not None:
             if isinstance(rmse_window, Mapping):
@@ -480,7 +520,7 @@ def build_replenishment_decisions_from_simulations(
             metadata = ReplenishmentDecisionMetadata(
                 sigma=sigma_value,
                 service_level_mode=mode_value,
-                aggregation_window=window,
+                aggregation_window=aggregation_value,
                 review_period=window,
                 forecast_horizon=forecast_horizon_value,
                 rmse_window=rmse_window_value,
@@ -497,7 +537,7 @@ def build_replenishment_decisions_from_simulations(
                 aggregation_window=(
                     metadata.aggregation_window
                     if metadata.aggregation_window is not None
-                    else window
+                    else aggregation_value
                 ),
                 review_period=(
                     metadata.review_period
@@ -629,6 +669,15 @@ def build_replenishment_decisions_from_simulations(
                 stock_after = 0.0
             else:
                 missed_sales = 0
+            if lead_time == 0:
+                stock_after += float(snapshot.order_placed)
+            if item_policy:
+                # New policy workflows report the actual simulated stock path.
+                # Retain the legacy current_stock reconstruction for older
+                # forecast workflows that explicitly use a different baseline.
+                starting_stock = snapshot.starting_on_hand
+                stock_after = float(snapshot.ending_on_hand)
+                missed_sales = snapshot.lost_sales
             ending_stock = int(round(stock_after))
             current_stock = ending_stock
             running_stock = stock_after
@@ -659,6 +708,18 @@ def build_replenishment_decisions_from_simulations(
                         rop_forecast_values, cycle_index, cycle_horizon
                     )
                     order_up_to = reorder_point + cycle_stock
+            if item_policy:
+                # Forecast-derived thresholds describe the older forecast
+                # policies, not the decisions made by these independent rules.
+                # PIL's target is expected stock at arrival, not an inventory-
+                # position order-up-to level; quantile targets may vary by date.
+                reorder_point = None
+                order_up_to = None
+                parameters = dict(simulation.metadata.policy_parameters)
+                if simulation.metadata.policy_name in {"BaseStockPolicy", "CappedBaseStockPolicy", "sSPolicy"}:
+                    order_up_to = parameters.get("target_stock")
+                if simulation.metadata.policy_name == "sSPolicy":
+                    reorder_point = parameters.get("reorder_point")
             decisions.append(
                 ReplenishmentDecisionRow(
                     unique_id=unique_id,
