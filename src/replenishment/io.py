@@ -367,7 +367,8 @@ def build_replenishment_decisions_from_simulations(
     decisions: list[ReplenishmentDecisionRow] = []
     metadata_lookup = decision_metadata or {}
     for unique_id, simulation in simulations.items():
-        item_policy = simulation.metadata is not None and simulation.metadata.policy_family == "independent_item"
+        item_policy = simulation.metadata is not None and simulation.metadata.policy_family in {"independent_item", "solver_item", "coordinated_solver"}
+        solver_policy = simulation.metadata is not None and simulation.metadata.policy_family in {"solver_item", "coordinated_solver"}
         if unique_id not in grouped:
             raise ValueError(f"Missing standard rows for unique_id '{unique_id}'.")
         ordered = _order_rows_by_ds(unique_id, grouped[unique_id])
@@ -445,6 +446,8 @@ def build_replenishment_decisions_from_simulations(
         ds_values = [row.ds for row in ordered]
         snapshot_count = len(simulation.snapshots)
         daily_snapshots = snapshot_count == len(ds_values)
+        if solver_policy and not daily_snapshots:
+            raise ValueError("Solver results require one daily snapshot per standard-row date.")
         snapshot_window = 1 if daily_snapshots else window
         max_index = (snapshot_count - 1) * snapshot_window
         if not daily_snapshots and max_index >= len(ds_values):
@@ -589,7 +592,7 @@ def build_replenishment_decisions_from_simulations(
                     forecast_quantity = None
                     forecast_quantity_lead_time = None
                 else:
-                    if daily_snapshots and window > 1:
+                    if daily_snapshots and window > 1 and not solver_policy:
                         cycle_end = min(start + window, forecast_length)
                         forecast_quantity = sum(
                             forecast_values[start:cycle_end]

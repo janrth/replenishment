@@ -133,7 +133,7 @@ timing, lost-sales metrics, probabilistic assumptions and future PR boundaries.
 
 Runnable walkthroughs live in [`notebooks/`](notebooks):
 
-All nine new-method examples follow the existing standard-data workflow:
+The nine solver-free examples follow the existing standard-data workflow:
 generate rows/DataFrame, split chronologically, fit each article's policy, inspect
 parameters, simulate, inspect decision rows, and call `plot_replenishment_decisions`
 for example items and aggregate stock/missed-sales views.
@@ -160,6 +160,24 @@ Advanced learning is available through `pip install -e ".[advanced]"` (optional
 PyTorch). Risk-based candidate search and saved neural-policy inference work
 without Torch. See [advanced independent-item methods](docs/advanced_item_policies.md)
 for APIs, training/deployment rounding, fixed-cost restrictions and risk assumptions.
+
+## Solver-based planning
+
+Install `pip install -e ".[solver]"` for the optional SciPy/HiGHS backend.
+`DeterministicRollingHorizonPolicy` and `ScenarioRollingHorizonPolicy` plan integer
+orders with dated receipts, fixed charges, MOQ and pack sizes. For shared per-period
+budgets, order limits and receiving capacity, use the explicit
+`simulate_coordinated_replenishment` loop. Scenario decisions share the same actions
+until their observed demand histories diverge. See the
+[formulation and API guide](docs/solver_policies.md) for timing and finite-horizon assumptions.
+
+Executed examples include saved item/aggregate demand, stock and missed-sales plots:
+
+- [Deterministic rolling horizon](notebooks/deterministic_rolling_horizon_policy_example.ipynb)
+- [Scenario rolling horizon](notebooks/scenario_rolling_horizon_policy_example.ipynb)
+- [Coordinated multi-item planning](notebooks/coordinated_solver_policy_example.ipynb), including shared-resource utilization
+- [Maximize expected revenue](notebooks/revenue_maximization_policy_example.ipynb), preserving actual purchasing-budget constraints
+- [Maximize expected profit](notebooks/profit_maximization_policy_example.ipynb), with matched revenue/profit comparisons and financial ledgers
 
 ## Development and Contribution
 

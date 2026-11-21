@@ -18,7 +18,9 @@ from .item_policies import _ITEM_POLICY_TYPES, _integer
 
 
 def _check_item_policy_aggregation(policy: OrderingPolicy, window: int) -> None:
-    if isinstance(policy, _ITEM_POLICY_TYPES):
+    from .solver_policies import SOLVER_POLICY_TYPES
+
+    if isinstance(policy, _ITEM_POLICY_TYPES + SOLVER_POLICY_TYPES):
         _integer("aggregation_window", window, 1)
         if window != 1:
             raise ValueError(
