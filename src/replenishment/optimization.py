@@ -4,12 +4,18 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace as dataclass_replace
+import math
+from itertools import islice
+from types import MappingProxyType
+
+from .item_policies import _integer, _ITEM_POLICY_TYPES
 
 from .aggregation import (
     aggregate_lead_time,
     aggregate_periods,
     aggregate_policy,
     aggregate_series,
+    _check_item_policy_aggregation,
 )
 from .policies import (
     EmpiricalMultiplierPolicy,
@@ -30,8 +36,76 @@ from .simulation import (
     DemandModel,
     SimulationMetadata,
     SimulationResult,
+    OrderingPolicy,
     simulate_replenishment,
 )
+
+
+@dataclass(frozen=True)
+class PolicyOptimizationResult:
+    """Best candidate in a finite per-item cost search; ties favor input order."""
+
+    label: str
+    policy: OrderingPolicy
+    simulation: SimulationResult
+    candidate_costs: Mapping[str, float]
+
+
+def optimize_policy_candidates(
+    *,
+    candidates: Mapping[str, OrderingPolicy],
+    periods: int,
+    demand: Iterable[int] | DemandModel,
+    initial_on_hand: int,
+    lead_time: int,
+    holding_cost_per_unit: float = 0.0,
+    stockout_cost_per_unit: float = 0.0,
+    order_cost_per_order: float = 0.0,
+    order_cost_per_unit: float = 0.0,
+) -> PolicyOptimizationResult:
+    """Select the cheapest policy on a shared realized single-item trace.
+
+    Both callable and iterable demand are materialized once. Policy instances
+    must be reusable across simulations (built-ins are immutable). Samples and
+    parameters must be trained without looking at evaluation demand. This is
+    finite candidate enumeration, not a guarantee of global policy optimality.
+    No budget/capacity is shared between items, and no solver is used.
+    """
+    if not candidates:
+        raise ValueError("candidates must not be empty.")
+    periods = _integer("periods", periods, 1)
+    lead_time = _integer("lead_time", lead_time)
+    initial_on_hand = _integer("initial_on_hand", initial_on_hand)
+    costs = dict(
+        holding_cost_per_unit=holding_cost_per_unit,
+        stockout_cost_per_unit=stockout_cost_per_unit,
+        order_cost_per_order=order_cost_per_order,
+        order_cost_per_unit=order_cost_per_unit,
+    )
+    for name, value in costs.items():
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(f"{name} must be finite and nonnegative.")
+    trace = [demand(t) for t in range(periods)] if callable(demand) else list(islice(demand, periods))
+    if len(trace) < periods:
+        raise ValueError("Demand series shorter than periods.")
+    trace = [_integer("demand", value) for value in trace]
+    candidate_costs = {}
+    best = None
+    for label, policy in candidates.items():
+        simulation = simulate_replenishment(
+            periods=periods, demand=trace, initial_on_hand=initial_on_hand,
+            lead_time=lead_time, policy=policy, **costs,
+        )
+        candidate_costs[label] = simulation.summary.total_cost
+        if best is None or simulation.summary.total_cost < best[2].summary.total_cost:
+            best = (label, policy, simulation)
+    label, policy, simulation = best
+    if simulation.metadata is None:
+        simulation = dataclass_replace(simulation, metadata=SimulationMetadata(
+            policy_name=type(policy).__name__,
+            review_period=getattr(policy, "review_period", None),
+        ))
+    return PolicyOptimizationResult(label, policy, simulation, MappingProxyType(candidate_costs))
 
 
 def _attach_metadata(
@@ -48,6 +122,9 @@ def _attach_metadata(
 ) -> SimulationResult:
     base = simulation.metadata
     metadata = SimulationMetadata(
+        policy_family=base.policy_family if base is not None else None,
+        policy_name=base.policy_name if base is not None else None,
+        policy_parameters=base.policy_parameters if base is not None else (),
         service_level_factor=(
             service_level_factor
             if service_level_factor is not None
@@ -179,16 +256,7 @@ ForecastTargetOptimizationResult = PercentileForecastOptimizationResult
 class AggregationWindowOptimizationResult:
     window: int
     simulation: SimulationResult
-    policy: (
-        ForecastSeriesPolicy
-        | ForecastBasedPolicy
-        | PointForecastOptimizationPolicy
-        | LeadTimeForecastOptimizationPolicy
-        | RopPointForecastOptimizationPolicy
-        | PercentileForecastOptimizationPolicy
-        | RopPercentileForecastOptimizationPolicy
-        | None
-    )
+    policy: OrderingPolicy | None
 
 
 @dataclass(frozen=True)
@@ -882,6 +950,7 @@ def optimize_aggregation_windows(
     for article_id, config in articles.items():
         best_result: AggregationWindowOptimizationResult | None = None
         for window in windows:
+            _check_item_policy_aggregation(config.policy, window)
             if hasattr(config.policy, "aggregation_window"):
                 replace_kwargs: dict[str, object] = {"aggregation_window": window}
                 if hasattr(config.policy, "review_period"):
@@ -924,7 +993,7 @@ def optimize_aggregation_windows(
                         ForecastBasedPolicy,
                         PointForecastOptimizationPolicy,
                         PercentileForecastOptimizationPolicy,
-                    ),
+                    ) + _ITEM_POLICY_TYPES,
                 )
                 else None,
             )
