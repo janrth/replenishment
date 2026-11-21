@@ -6,6 +6,20 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Revenue-only weighted-lost-sales objective with actual procurement-budget
+  accounting preserved; default total-cost objective remains unchanged.
+- Executed revenue and operating-profit notebooks with matched generated data,
+  exact worked allocations, reconciled financial ledgers and budget/stock plots.
+
+- Optional `solver` extra with SciPy/HiGHS deterministic and scenario-tree
+  rolling-horizon integer policies, including fixed charges, MOQ and case packs.
+- Explicit coordinated multi-item simulation with per-period procurement budgets,
+  order-unit and receiving limits, inspected plans and execution resource logs.
+- Nonanticipative future decisions and mean/CVaR/blended/worst-scenario objectives,
+  strict solve-status/feasibility checks and independent integer replay.
+- Three executed solver notebooks with individual/aggregate stock and missed-sales
+  plots, plus a shared-resource plot for coordinated planning; optional-solver CI.
+
 - Optional PyTorch `advanced` extra, structured neural residual policy with
   supervised training, pure-Python deployment and numeric JSON checkpoints.
 - Single-item HDPO with differentiable lost-sales rollouts, separate exact

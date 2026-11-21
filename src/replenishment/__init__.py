@@ -111,7 +111,21 @@ except ModuleNotFoundError:
     plot_replenishment_decisions = None
     _HAS_PLOTTING = False
 
+from .solver import (
+    SolverItemConfig, SharedResourceLimits, SolverOptions, PlanningError,
+    RollingHorizonPlan, plan_replenishment,
+)
+from .solver_policies import DeterministicRollingHorizonPolicy, ScenarioRollingHorizonPolicy
+
+from .joint_simulation import (
+    ResourceUse, CoordinatedSimulationResult, simulate_coordinated_replenishment,
+)
+
 __all__ = [
+    "ResourceUse", "CoordinatedSimulationResult", "simulate_coordinated_replenishment",
+    "SolverItemConfig", "SharedResourceLimits", "SolverOptions", "PlanningError",
+    "RollingHorizonPlan", "plan_replenishment",
+    "DeterministicRollingHorizonPolicy", "ScenarioRollingHorizonPolicy",
     "NeuralPolicyConfig",
     "NeuralWeights",
     "StructuredNeuralPolicy",

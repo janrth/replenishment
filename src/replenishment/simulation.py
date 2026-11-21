@@ -153,7 +153,10 @@ def simulate_replenishment(
         StructuredNeuralPolicy,
     )
 
-    item_policy = isinstance(policy, _ITEM_POLICY_TYPES)
+    from .solver_policies import SOLVER_POLICY_TYPES, solver_metadata
+
+    solver_policy = isinstance(policy, SOLVER_POLICY_TYPES)
+    item_policy = isinstance(policy, _ITEM_POLICY_TYPES) or solver_policy
     if item_policy:
         periods = _integer("periods", periods, 1)
         lead_time = _integer("lead_time", lead_time)
@@ -166,7 +169,7 @@ def simulate_replenishment(
         ):
             if not math.isfinite(value) or value < 0:
                 raise ValueError(f"{name} must be finite and nonnegative.")
-    if isinstance(policy, (ProjectedInventoryLevelPolicy, ProtectionPeriodQuantilePolicy, StructuredNeuralPolicy)):
+    if solver_policy or isinstance(policy, (ProjectedInventoryLevelPolicy, ProtectionPeriodQuantilePolicy, StructuredNeuralPolicy)):
         if policy.lead_time != lead_time:
             raise ValueError("Policy lead_time must match simulation lead_time.")
     if periods <= 0:
@@ -279,6 +282,8 @@ def simulate_replenishment(
                 else policy.forecast_horizon if isinstance(policy, StructuredNeuralPolicy) else None
             ),
         )
+    if solver_policy:
+        metadata = solver_metadata(policy)
     return SimulationResult(snapshots=snapshots, summary=summary, metadata=metadata)
 
 
